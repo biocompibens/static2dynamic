@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Static2Dynamic</title>
+    <meta
+      name="description"
+      content="Static2Dynamic supplementary website for biological ground truths and generated dynamics."
+    >
+    <link rel="stylesheet" href="styles.css">
+    <script src="citations.js"></script>
+    <script src="main.js" defer></script>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <h1 id="site-title">Static2Dynamic</h1>
+          <p class="hero-text" id="site-subtitle">
+            Lightweight supplementary material for datasets, ground truth examples, and generated results.
+          </p>
+          <div class="authors" aria-label="Authors and affiliations">
+            <p>
+              <a href="https://thethomasboyer.github.io" target="_blank" rel="noreferrer">Thomas Boyer</a>,
+              Elaine del Nery, Nathalie Spassky, Auguste Genovesio
+            </p>
+            <p>Institut de Biologie de l&rsquo;ENS, 46 rue d&rsquo;Ulm 75005 Paris</p>
+            <p>Institut Curie, 23 rue d&rsquo;Ulm, 75005 Paris</p>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <section class="intro-panel" aria-label="Method">
+          <div class="intro-head">
+            <p class="section-kicker">Method</p>
+          </div>
+          <div class="intro-body" id="intro-body"></div>
+        </section>
+
+        <nav class="dataset-nav" id="dataset-nav" aria-label="Datasets"></nav>
+
+        <section class="datasets" id="datasets"></section>
+      </main>
+    </div>
+
+    <noscript>
+      <div class="noscript-note">
+        This page uses a tiny script to render the dataset sections. Enable JavaScript to view the content.
+      </div>
+    </noscript>
+  </body>
+</html>
