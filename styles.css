@@ -48,7 +48,7 @@ a {
 .hero {
   display: grid;
   gap: 1rem;
-  padding: 1.5rem 0 2.5rem;
+  padding: 1.5rem 0 1.2rem;
 }
 
 .section-kicker,
@@ -106,10 +106,6 @@ a {
   line-height: 1.45;
 }
 
-.authors p {
-  margin: 0;
-}
-
 .authors a {
   color: var(--ink);
   text-decoration-color: rgba(23, 24, 22, 0.22);
@@ -122,6 +118,55 @@ a {
   outline: none;
 }
 
+.code-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg-soft);
+  color: var(--ink);
+  text-decoration: none;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.code-link:hover,
+.code-link:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.authors-names {
+  margin: 0 0 0.35rem;
+}
+
+.affil {
+  color: var(--muted);
+  font-size: 0.9em;
+  margin-left: 0.15rem;
+  vertical-align: super;
+}
+
+.institution {
+  margin: 0.25rem 0 0;
+}
+
+.institution a {
+  color: var(--muted);
+}
+
+.institution a:hover,
+.institution a:focus-visible {
+  color: var(--accent);
+}
+
+.external-links {
+  margin: 1.5rem 0 0 0;
+}
+
 .intro-panel,
 .dataset {
   border: 1px solid var(--line);
@@ -132,7 +177,7 @@ a {
 .intro-panel {
   display: grid;
   gap: 1rem;
-  padding: 1.5rem;
+  padding: 0.6rem 1.5rem 1.5rem;
 }
 
 .intro-body {
@@ -270,6 +315,12 @@ a {
   max-height: 42rem;
 }
 
+#cell-cycle .media-shell img,
+#cell-cycle .media-shell video {
+  max-height: 40rem !important;
+  min-width: 18rem !important;
+}
+
 .media-label {
   margin: 0;
 }
@@ -320,4 +371,5 @@ a {
   .plot-embed iframe {
     height: 24rem;
   }
+}
 }

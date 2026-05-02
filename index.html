@@ -1,54 +1,67 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Static2Dynamic</title>
-    <meta
-      name="description"
-      content="Static2Dynamic supplementary website for biological ground truths and generated dynamics."
-    >
-    <link rel="stylesheet" href="styles.css">
-    <script src="citations.js"></script>
-    <script src="main.js" defer></script>
-  </head>
-  <body>
-    <div class="page-shell">
-      <header class="hero">
-        <div class="hero-copy">
-          <h1 id="site-title">Static2Dynamic</h1>
-          <p class="hero-text" id="site-subtitle">
-            Lightweight supplementary material for datasets, ground truth examples, and generated results.
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Static2Dynamic</title>
+  <meta name="description" content="Static2Dynamic supplementary website for biological ground truths and generated dynamics.">
+  <link rel="stylesheet" href="styles.css">
+  <script src="citations.js"></script>
+  <script src="main.js" defer></script>
+</head>
+
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <h1 id="site-title">Static2Dynamic</h1>
+        <p class="hero-text" id="site-subtitle">
+          Lightweight supplementary material for datasets, ground truth examples, and generated results.
+        </p>
+        <div class="authors" aria-label="Authors and affiliations">
+          <p class="authors-names">
+            <a href="https://thethomasboyer.github.io" target="_blank" rel="noreferrer">Thomas Boyer</a><span class="affil" aria-label="IBENS">*</span>,
+            <a href="https://institut-curie.org/person/elaine-del-nery-santos" target="_blank" rel="noreferrer">Elaine
+              del Nery</a><span class="affil" aria-label="Curie">†</span>,
+            <a href="https://www.ibens.ens.fr/spip.php?rubrique6=" target="_blank" rel="noreferrer">Nathalie
+              Spassky</a><span class="affil" aria-label="IBENS">*</span>,
+            <a href="https://www.ibens.bio.ens.psl.eu/spip.php?article142=&lang=en" target="_blank" rel="noreferrer">Auguste Genovesio</a><span class="affil" aria-label="IBENS">*</span>
           </p>
-          <div class="authors" aria-label="Authors and affiliations">
-            <p>
-              <a href="https://thethomasboyer.github.io" target="_blank" rel="noreferrer">Thomas Boyer</a>,
-              Elaine del Nery, Nathalie Spassky, Auguste Genovesio
-            </p>
-            <p>Institut de Biologie de l&rsquo;ENS, 46 rue d&rsquo;Ulm 75005 Paris</p>
-            <p>Institut Curie, 23 rue d&rsquo;Ulm, 75005 Paris</p>
-          </div>
+          <p class="institution"><span class="affil">*</span><a href="https://www.ibens.bio.ens.psl.eu/" target="_blank" rel="noreferrer">Institut
+              de Biologie de l&rsquo;École Normale Supérieure</a>, 46 rue d&rsquo;Ulm
+            75005 Paris</p>
+          <p class="institution"><span class="affil">†</span><a href="https://institut-curie.org/" target="_blank" rel="noreferrer">Institut
+              Curie</a>, 23 rue d&rsquo;Ulm, 75005 Paris</p>
+          <p class="external-links"><a class="code-link" href="https://github.com/biocompibens/static2dynamic" target="_blank" rel="noreferrer">
+              <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+              Code
+            </a></p>
         </div>
-      </header>
-
-      <main>
-        <section class="intro-panel" aria-label="Method">
-          <div class="intro-head">
-            <p class="section-kicker">Method</p>
-          </div>
-          <div class="intro-body" id="intro-body"></div>
-        </section>
-
-        <nav class="dataset-nav" id="dataset-nav" aria-label="Datasets"></nav>
-
-        <section class="datasets" id="datasets"></section>
-      </main>
-    </div>
-
-    <noscript>
-      <div class="noscript-note">
-        This page uses a tiny script to render the dataset sections. Enable JavaScript to view the content.
       </div>
-    </noscript>
-  </body>
+    </header>
+
+    <main>
+      <section class="intro-panel" aria-label="Method">
+        <div class="intro-head">
+          <p class="section-kicker">Method</p>
+        </div>
+        <div class="intro-body" id="intro-body"></div>
+      </section>
+
+      <nav class="dataset-nav" id="dataset-nav" aria-label="Datasets"></nav>
+
+      <section class="datasets" id="datasets"></section>
+    </main>
+  </div>
+
+  <noscript>
+    <div class="noscript-note">
+      This page uses a tiny script to render the dataset sections. Enable JavaScript to view the content.
+    </div>
+  </noscript>
+</body>
+
 </html>
