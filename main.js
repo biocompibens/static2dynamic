@@ -2,10 +2,10 @@
 const siteData = {
   title: "Static2Dynamic",
   subtitle:
-    "Supplementary qualitative results with ground truths and generated samples shown side by side.",
+    "Supplementary material with pseudotimes, ground truths and generated videos.",
   intro: [
-    "Static2Dynamic reconstructs unseen biological dynamics from time-unpaired static images. It estimates a continuous pseudotime for each image, learns a pseudotime-conditioned generative model, and produces temporally coherent videos initialized from real samples.",
-    "The method is validated on experimental microscopy videos where ground truths are available, then applied to biological processes where only ordered cross-sectional images exist.",
+    "Static2Dynamic reconstructs unseen continuous dynamics from time-unpaired static images. It achieves this in 3 stages: 1. estimate a continuous pseudotime for each image 2. learn a pseudotime-conditioned image diffusion model 3. generate temporally coherent videos initialized from real samples",
+    "We validate our method on experimental microscopy *video* datasets where ground truths are available, then apply Static2Dynamic to biological processes where only cross-sectional data is available, demonstrating its wide applicability.",
   ],
   datasets: [
     {
@@ -46,12 +46,22 @@ const siteData = {
         "An imaging flow cytometry dataset of Jurkat cells from [Blasi et al. 2016]{blasi2016}. The discrete classes are annotated cell cycle phases. We use only the brightfield channel and reprocess the raw single-cell crops by standardizing square crops, filling the background, and aligning intensity.",
       comparisons: [
         {
-          gt: { src: "cell_cycle/gt_vids_display/ground_truth_random_pairing_01.mp4" },
-          gen: { src: "cell_cycle/gen_vids/extracted/trajectories_cell_0_0.mp4" },
+          gt: {
+            src: "cell_cycle/gt_vids_display/ground_truth_grid_01.png",
+            labels: ["G1", "S", "G2", "Prophase", "Metaphase", "Anaphase", "Telophase"],
+          },
+          gen: {
+            src: "cell_cycle/gen_vids/extracted/trajectories_cell_0_0.mp4",
+          },
         },
         {
-          gt: { src: "cell_cycle/gt_vids_display/ground_truth_random_pairing_02.mp4" },
-          gen: { src: "cell_cycle/gen_vids/extracted/trajectories_cell_1_0.mp4" },
+          gt: {
+            src: "cell_cycle/gt_vids_display/ground_truth_grid_02.png",
+            labels: ["G1", "S", "G2", "Prophase", "Metaphase", "Anaphase", "Telophase"],
+          },
+          gen: {
+            src: "cell_cycle/gen_vids/extracted/trajectories_cell_1_0.mp4",
+          },
         },
       ],
     },
@@ -82,11 +92,17 @@ const siteData = {
         "A preprocessed dataset from [Heinemann et al. 2019]{heinemann2019} with mouse or rat liver tissue sections affected by non-alcoholic fatty liver disease, stained with Masson's trichrome, and annotated for four steatosis stages corresponding to the Kleiner score ([Kleiner et al. 2005]{kleiner2005}).",
       comparisons: [
         {
-          gt: { src: "NASH/gt_vids/ground_truth_random_pairing_01.mp4" },
+          gt: {
+            src: "NASH/gt_vids/ground_truth_grid_01.png",
+            labels: ["0", "1", "2", "3"],
+          },
           gen: { src: "NASH/gen_vids/extracted/trajectories_cell_0_0.mp4" },
         },
         {
-          gt: { src: "NASH/gt_vids/ground_truth_random_pairing_02.mp4" },
+          gt: {
+            src: "NASH/gt_vids/ground_truth_grid_02.png",
+            labels: ["0", "1", "2", "3"],
+          },
           gen: { src: "NASH/gen_vids/extracted/trajectories_cell_1_0.mp4" },
         },
       ],
@@ -102,7 +118,15 @@ const siteData = {
   ],
 };
 
-const imageExtensions = new Set(["png", "jpg", "jpeg", "webp", "gif", "svg", "avif"]);
+const imageExtensions = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "svg",
+  "avif",
+]);
 const videoExtensions = new Set(["mp4", "mov", "webm", "ogg", "avi", "m4v"]);
 
 const escapeHtml = (value = "") =>
@@ -128,15 +152,31 @@ const richText = (value = "") =>
         return label;
       }
       return `<a class="citation-link" href="${encodeURI(citation.url)}" target="_blank" rel="noreferrer">${escapeHtml(citation.label || label)}</a>`;
-    }
-  );
+    },
+  ).replace(/\*([^*]+)\*/g, "<em>$1</em>");
 
-const fileStem = (path) => path.split("/").pop().replace(/\.[^.]+$/, "");
+const renderIntroParagraph = (paragraph) => {
+  const stages = paragraph.match(/^(.*?:)\s*1\.\s*(.*?)\s*2\.\s*(.*?)\s*3\.\s*(.*)$/);
+  if (!stages) {
+    return `<p>${richText(paragraph)}</p>`;
+  }
+
+  const [, lead, ...items] = stages;
+  return `
+    <p>${richText(lead)}</p>
+    <ol class="intro-steps">
+      ${items.map((item) => `<li>${richText(item)}</li>`).join("")}
+    </ol>
+  `;
+};
+
+const fileStem = (path) =>
+  path
+    .split("/")
+    .pop()
+    .replace(/\.[^.]+$/, "");
 const titleFromPath = (path) =>
-  fileStem(path)
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  fileStem(path).replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 
 const slugify = (value) =>
   value
@@ -162,21 +202,37 @@ const mediaKind = (item) => {
   return "video";
 };
 
-const mediaCard = (item, label) => {
+const mediaCard = (item, label, datasetSize = "small") => {
   const source = encodeURI(item.src);
   const kind = mediaKind(item);
+  const isImage = kind === "image";
+  const isLargeDataset = datasetSize === "large";
+  const labels = Array.isArray(item.labels) ? item.labels : [];
+  const zoomLabels = labels.length
+    ? ` data-zoom-labels="${escapeHtml(JSON.stringify(labels))}"`
+    : "";
+  const zoomTitle = ` data-zoom-title="${escapeHtml(label)}"`;
+  const labelTicks = labels.length
+    ? `<div class="series-labels" style="--series-count: ${labels.length}">
+        ${labels.map((seriesLabel) => `<span>${escapeHtml(seriesLabel)}</span>`).join("")}
+      </div>`
+    : "";
   const media =
-    kind === "image"
-      ? `<img src="${source}" alt="${escapeHtml(label)}" loading="lazy">`
+    isImage
+      ? `<button class="image-zoom-trigger" type="button" data-zoom-src="${source}"${zoomTitle}${zoomLabels} aria-label="Zoom ${escapeHtml(label)}">
+           <img src="${source}" alt="${escapeHtml(label)}" loading="lazy">
+         </button>`
       : `<video controls autoplay playsinline muted preload="auto" data-sync-video>
            <source src="${source}">
            Your browser does not support the video tag.
-         </video>`;
+         </video>
+         <button class="video-zoom-trigger" type="button" data-zoom-src="${source}"${zoomTitle} data-zoom-size="${isLargeDataset ? "large" : "small"}" aria-label="Zoom ${escapeHtml(label)}">Zoom</button>`;
 
   return `
-    <article class="media-card">
+    <article class="media-card ${isImage ? "media-card-image" : "media-card-video"}">
       <p class="media-label">${escapeHtml(label)}</p>
       <div class="media-shell">${media}</div>
+      ${labelTicks}
     </article>
   `;
 };
@@ -196,7 +252,7 @@ const plotEmbeds = (dataset) => {
     <div class="plot-embed">
       <iframe src="${encodeURI(plot)}" loading="lazy" title="Dataset embedding plot"></iframe>
     </div>
-  `
+  `,
     )
     .join("");
 };
@@ -215,14 +271,15 @@ const normalizeComparisons = (dataset) => {
   }));
 };
 
-const comparisonRow = (comparison, index) => {
+const comparisonRow = (comparison, datasetSize) => {
   const gt = comparison.gt;
   const gen = comparison.gen;
+  const gtLabel = gt && mediaKind(gt) === "video" ? "Ground truth" : "Ground truths";
   return `
     <article class="comparison-row">
       <div class="comparison-media">
-        ${gt ? mediaCard(gt, "Ground truths") : `<div class="empty-note">No ground truth sample.</div>`}
-        ${gen ? mediaCard(gen, "Generated") : `<div class="empty-note">No generated sample.</div>`}
+        ${gt ? mediaCard(gt, gtLabel, datasetSize) : `<div class="empty-note">No ground truth sample.</div>`}
+        ${gen ? mediaCard(gen, "Generated", datasetSize) : `<div class="empty-note">No generated sample.</div>`}
       </div>
     </article>
   `;
@@ -231,14 +288,16 @@ const comparisonRow = (comparison, index) => {
 const introTarget = document.querySelector("#intro-body");
 const datasetNavTarget = document.querySelector("#dataset-nav");
 const datasetTarget = document.querySelector("#datasets");
-const introParagraphs = Array.isArray(siteData.intro) ? siteData.intro : [siteData.intro];
+const introParagraphs = Array.isArray(siteData.intro)
+  ? siteData.intro
+  : [siteData.intro];
 const datasets = Array.isArray(siteData.datasets) ? siteData.datasets : [];
 
 document.querySelector("#site-title").textContent = siteData.title;
 document.querySelector("#site-subtitle").textContent = siteData.subtitle;
 
 introTarget.innerHTML = introParagraphs
-  .map((paragraph) => `<p>${richText(paragraph)}</p>`)
+  .map(renderIntroParagraph)
   .join("");
 
 datasetNavTarget.hidden = datasets.length < 2;
@@ -248,6 +307,12 @@ datasetNavTarget.innerHTML = datasets
     return `<a class="dataset-chip" href="#${slugify(name)}">${escapeHtml(name)}</a>`;
   })
   .join("");
+if (!datasetNavTarget.hidden) {
+  datasetNavTarget.insertAdjacentHTML(
+    "afterbegin",
+    `<p class="section-kicker">Datasets</p>`,
+  );
+}
 
 datasetTarget.innerHTML = datasets.length
   ? datasets
@@ -258,7 +323,6 @@ datasetTarget.innerHTML = datasets.length
         return `
           <section class="dataset dataset-${size}" id="${slugify(name)}">
             <div class="dataset-heading">
-              <p class="section-kicker">Dataset</p>
               <h2>${escapeHtml(name)}</h2>
               ${
                 dataset.description
@@ -270,7 +334,7 @@ datasetTarget.innerHTML = datasets.length
             <div class="comparison-list">
               ${
                 comparisons.length
-                  ? comparisons.map(comparisonRow).join("")
+                  ? comparisons.map((comparison) => comparisonRow(comparison, size)).join("")
                   : `<div class="empty-note">No media added yet.</div>`
               }
             </div>
@@ -327,3 +391,73 @@ const syncVideoGroup = (row) => {
 };
 
 document.querySelectorAll(".comparison-row").forEach(syncVideoGroup);
+
+const zoomDialog = document.createElement("dialog");
+zoomDialog.className = "image-zoom-dialog";
+zoomDialog.innerHTML = `
+  <button class="image-zoom-close" type="button" aria-label="Close zoom">Close</button>
+  <p class="media-label zoom-title"></p>
+  <img alt="">
+  <video controls playsinline></video>
+  <div class="series-labels zoom-series-labels"></div>
+`;
+document.body.append(zoomDialog);
+
+const zoomImage = zoomDialog.querySelector("img");
+const zoomVideo = zoomDialog.querySelector("video");
+const zoomTitle = zoomDialog.querySelector(".zoom-title");
+const zoomLabels = zoomDialog.querySelector(".zoom-series-labels");
+const resetZoomDialog = () => {
+  zoomDialog.dataset.zoomMode = "";
+  zoomTitle.textContent = "";
+  zoomImage.hidden = true;
+  zoomImage.removeAttribute("src");
+  zoomImage.alt = "";
+  zoomVideo.hidden = true;
+  zoomVideo.pause();
+  zoomVideo.removeAttribute("src");
+  zoomVideo.load();
+  zoomLabels.hidden = true;
+  zoomLabels.innerHTML = "";
+};
+resetZoomDialog();
+
+document.querySelectorAll(".image-zoom-trigger").forEach((trigger) => {
+  trigger.addEventListener("click", () => {
+    resetZoomDialog();
+    zoomTitle.textContent = trigger.dataset.zoomTitle || "";
+    zoomImage.src = trigger.dataset.zoomSrc;
+    zoomImage.alt = trigger.querySelector("img")?.alt || "";
+    zoomImage.hidden = false;
+    const labels = JSON.parse(trigger.dataset.zoomLabels || "[]");
+    zoomLabels.hidden = labels.length === 0;
+    zoomLabels.style.setProperty("--series-count", labels.length || 1);
+    zoomLabels.innerHTML = labels
+      .map((seriesLabel) => `<span>${escapeHtml(seriesLabel)}</span>`)
+      .join("");
+    zoomDialog.showModal();
+  });
+});
+document.querySelectorAll(".video-zoom-trigger").forEach((trigger) => {
+  trigger.addEventListener("click", () => {
+    resetZoomDialog();
+    zoomDialog.dataset.zoomMode = trigger.dataset.zoomSize || "small";
+    zoomTitle.textContent = trigger.dataset.zoomTitle || "";
+    zoomVideo.src = trigger.dataset.zoomSrc;
+    zoomVideo.currentTime = 0;
+    zoomVideo.hidden = false;
+    zoomDialog.showModal();
+    zoomVideo.play().catch(() => {});
+  });
+});
+zoomDialog.querySelector(".image-zoom-close").addEventListener("click", () => {
+  zoomDialog.close();
+});
+zoomDialog.addEventListener("click", (event) => {
+  if (event.target === zoomDialog) {
+    zoomDialog.close();
+  }
+});
+zoomDialog.addEventListener("close", () => {
+  resetZoomDialog();
+});
