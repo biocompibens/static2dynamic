@@ -1,0 +1,1315 @@
+import json
+import pickle
+import random
+import re
+from collections.abc import Callable
+from dataclasses import replace as dataclass_replace
+from pathlib import Path
+from typing import TypeVar
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import tifffile
+import torch
+import torchvision.transforms.functional as tf
+from accelerate import Accelerator
+from accelerate.logging import MultiProcessAdapter
+from accelerate.utils import broadcast
+from attrs import define
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
+from PIL import Image, ImageFile
+from torch import Tensor, dtype
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torchvision.transforms.transforms import (
+    Compose,
+    RandomHorizontalFlip,
+    RandomVerticalFlip,
+)
+from torchvision.transforms.v2 import Compose as Compose_v2
+from torchvision.transforms.v2 import RandomHorizontalFlip as RandomHorizontalFlip_v2
+from torchvision.transforms.v2 import RandomVerticalFlip as RandomVerticalFlip_v2
+from torchvision.transforms.v2 import Transform
+
+from GaussianProxy.conf.training_conf import Config, DatasetParams
+
+
+class BaseDataset(Dataset[Tensor]):
+    """Just a dataset."""
+
+    def __init__(
+        self,
+        samples: list[Path],
+        transforms: Callable,
+        expected_initial_data_range: tuple[float, float] | None = None,
+        expected_dtype: dtype | None = None,  # TODO: this is never set?!?
+        base_path: Path | None = None,
+    ) -> None:
+        """
+        - base_path (`Path`): the path to the dataset directory
+        """
+        super().__init__()
+        self.samples = samples
+        self.transforms = transforms
+        self.expected_initial_data_range = expected_initial_data_range
+        self.expected_dtype = expected_dtype
+        # check that we indeed have sample
+        # (# we use __str__ in the error message, so any attribute assigned below this line cannot be used by __str__)
+        assert len(samples) > 0, f"Got 0 samples in {self}"
+        # common base path for the dataset
+        if base_path is None:
+            base_path = samples[0].parents[1]
+            assert all(  # TODO: this check might take a while...
+                (this_sample_base_path := f.parents[1]) == base_path for f in samples
+            ), (
+                f"All files should be under the same directory, got base_path={base_path} and sample_base_path={this_sample_base_path}"
+            )
+        self.base_path = base_path
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def load_to_pt_and_transform(self, path: str | Path) -> Tensor:
+        # load data
+        t = self._raw_file_loader(path)
+        # checks # TODO: check if this takes too much time
+        if self.expected_initial_data_range is not None and (
+            t.min() < self.expected_initial_data_range[0] or t.max() > self.expected_initial_data_range[1]
+        ):
+            raise ValueError(
+                f"Expected initial data range {self.expected_initial_data_range} but got [{t.min()}, {t.max()}] at {path}"
+            )
+        if self.expected_dtype is not None and t.dtype != self.expected_dtype:
+            raise ValueError(f"Expected dtype {self.expected_dtype} but got {t.dtype} at {path}")
+        # transform
+        t = self.transforms(t)
+        return t
+
+    def __getitem__(self, index: int) -> Tensor:
+        path = self.samples[index]
+        sample = self.load_to_pt_and_transform(path)
+        return sample
+
+    def __getitems__(self, indexes: list[int]) -> list[Tensor]:
+        paths = [self.samples[idx] for idx in indexes]
+        samples = self.get_items_by_name(paths)
+        return samples
+
+    def get_items_by_name(self, names: list[str | Path] | list[str] | list[Path]) -> list[Tensor]:
+        samples = [self.load_to_pt_and_transform(p) for p in names]
+        return samples
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __str__(self) -> str:
+        head = self.__class__.__name__
+        body_lines = [f"Number of datapoints: {len(self)}"]
+        if self.expected_initial_data_range is not None:
+            body_lines.append(f"Expected initial data range: {self.expected_initial_data_range}")
+        # Indent each line in the body
+        indented_body_lines = [" " * 4 + line for line in body_lines]
+        return "\n".join([head] + indented_body_lines)
+
+    def short_str(self, name: str | int) -> str:
+        return f"{name}: {len(self)} samples"
+
+
+@define
+class BaseContinuousTimeDatasetReturnValue:
+    time: float
+    tensor: Tensor
+
+
+CONTINUOUS_DF_COLUMNS = ["time", "file_path", "true_label"]
+CONTINUOUS_SPLIT_LABELS_DF_COLUMNS = ["file_path", "train_test_label"]
+
+
+class BaseContinuousTimeDataset(Dataset[BaseContinuousTimeDatasetReturnValue]):
+    """Just a dataset for continuous time data."""
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        transforms: Callable,
+        expected_initial_data_range: tuple[float, float] | None = None,
+        expected_dtype: dtype | None = None,  # TODO: this is never set?!?
+    ) -> None:
+        """
+        - base_path (`Path`): the path to the dataset directory
+        """
+        super().__init__()
+        self.df = df
+        self.transforms = transforms
+        self.expected_initial_data_range = expected_initial_data_range
+        self.expected_dtype = expected_dtype
+        # check that we indeed have sample
+        # (# we use __str__ in the error message, so any attribute assigned below this line cannot be used by __str__)
+        assert len(df) > 0, f"Got 0 samples in {self}"
+        assert df.columns.isin(CONTINUOUS_DF_COLUMNS).all(), (
+            f"Expected columns {CONTINUOUS_DF_COLUMNS}, got {df.columns.tolist()}"
+        )
+        # common base path for the dataset
+        base_path = Path(df.iloc[0].file_path).parents[1]
+        assert all(  # TODO: this check might take a while...
+            (this_sample_base_path := Path(f).parents[1]) == base_path for f in df.file_path
+        ), (
+            f"All files should be under the same directory, got base_path={base_path} and sample_base_path={this_sample_base_path}"
+        )
+        self.base_path = base_path
+
+    def _raw_image_loader(self, path: str | Path) -> Tensor:
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def _load_to_pt_and_transform(self, path: str | Path) -> Tensor:
+        # load data
+        t = self._raw_image_loader(path)
+        # checks # TODO: check if this takes too much time
+        if self.expected_initial_data_range is not None and (
+            t.min() < self.expected_initial_data_range[0] or t.max() > self.expected_initial_data_range[1]
+        ):
+            raise ValueError(
+                f"Expected initial data range {self.expected_initial_data_range} but got [{t.min()}, {t.max()}] at {path}"
+            )
+        if self.expected_dtype is not None and t.dtype != self.expected_dtype:
+            raise ValueError(f"Expected dtype {self.expected_dtype} but got {t.dtype} at {path}")
+        # transform
+        t = self.transforms(t)
+        return t
+
+    def __getitem__(self, index: int) -> BaseContinuousTimeDatasetReturnValue:
+        elem = self.df.iloc[index]
+        time = elem.time
+        path = elem.file_path
+        sample = self._load_to_pt_and_transform(path)
+        return BaseContinuousTimeDatasetReturnValue(time=time, tensor=sample)
+
+    def __getitems__(self, indexes: list[int]) -> list[BaseContinuousTimeDatasetReturnValue]:
+        times = self.df.iloc[indexes].time.tolist()
+        paths = self.df.iloc[indexes].file_path.tolist()
+        samples = [self._load_to_pt_and_transform(p) for p in paths]
+        items = [
+            BaseContinuousTimeDatasetReturnValue(time=time, tensor=sample)
+            for time, sample in zip(times, samples, strict=True)
+        ]
+        return items
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __str__(self) -> str:
+        head = self.__class__.__name__
+        body_lines = [f"Number of datapoints: {len(self)}"]
+        if self.expected_initial_data_range is not None:
+            body_lines.append(f"Expected initial data range: {self.expected_initial_data_range}")
+        # Indent each line in the body
+        indented_body_lines = [" " * 4 + line for line in body_lines]
+        return "\n".join([head] + indented_body_lines)
+
+    def short_str(self, name: str | int) -> str:
+        return f"{name}: {len(self)} samples"
+
+
+class NumpyDataset(BaseDataset):
+    """Just a dataset loading NumPy arrays."""
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        return torch.from_numpy(np.load(path))
+
+
+class ImageDataset(BaseDataset):
+    """Just a dataset loading images."""
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        return torch.from_numpy(np.array(Image.open(path))).permute(2, 0, 1)
+
+
+class ImageDataset1D(BaseDataset):
+    """Just a dataset loading 1-channel images."""
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        return torch.from_numpy(np.array(Image.open(path))).unsqueeze(0)
+
+
+class ImageDataset1Dto3D(BaseDataset):
+    """
+    Just a dataset loading 1-channel images, duplicating them to 3-channels.
+
+    Typically used to compute image encodings, and some metrics.
+    """
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        arr_1D = np.array(Image.open(path))  # (H, W)
+        assert arr_1D.ndim == 2, f"Expected 2D array, got {arr_1D.ndim}D array at {path}"
+        arr_3D = np.tile(arr_1D[:, :, np.newaxis], (1, 1, 3))  # (H, W, 3)
+        return torch.from_numpy(arr_3D).permute(2, 0, 1)
+
+
+class TIFFDataset(BaseDataset):
+    """Just a dataset loading TIFF images."""
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        array = tifffile.imread(path)
+        if array.dtype == np.uint16:
+            # torch.from_numpy does not support uint16, so convert to int32 to not loose precision
+            array = array.astype(np.int32, casting="safe")
+        return torch.from_numpy(array).permute(2, 0, 1)
+
+
+class TIFFDatasetNoPermute(BaseDataset):
+    """Just a dataset loading TIFF images."""
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        array = tifffile.imread(path)
+        if array.dtype == np.uint16:
+            # torch.from_numpy does not support uint16, so convert to int32 to not loose precision
+            array = array.astype(np.int32, casting="safe")
+        return torch.from_numpy(array)
+
+
+class TIFFDatasetSelectChannelsTo3D(BaseDataset):
+    """Just a dataset loading some channels of multi-channel TIFF images and mapping them to 3D"""
+
+    def __init__(
+        self,
+        samples: list[Path],
+        transforms: Callable,
+        selected_channels_with_repeats: tuple[int, ...],
+        expected_initial_data_range: tuple[float, float] | None = None,
+        expected_dtype: dtype | None = None,  # TODO: this is never set?!?
+    ) -> None:
+        assert len(selected_channels_with_repeats) == 3, (
+            f"Expected selected_channels to have exactly 3 channels, got {len(selected_channels_with_repeats)}"
+        )
+        super().__init__(samples, transforms, expected_initial_data_range, expected_dtype)
+        self.selected_channels_with_repeats = selected_channels_with_repeats
+
+    def _raw_file_loader(self, path: str | Path) -> Tensor:
+        # load
+        array = tifffile.imread(path)  # (C, H, W)
+        assert array.ndim == 3, f"Expected 3D array, got shape {array.shape} (hence {array.ndim}) at {path}"
+        # select channels (channel dim is expected to be the first one)
+        assert array.shape[0] < array.shape[1] and array.shape[0] < array.shape[2], (
+            f"Expected channel dim to be the first one, got shape {array.shape} at {path}"
+        )
+        array = array[self.selected_channels_with_repeats, ...]  # ", ..." is important!
+        # array is now (3, H, W)
+        # torch.from_numpy does not support uint16, so convert to int32 to not loose precision
+        if array.dtype == np.uint16:
+            array = array.astype(np.int32, casting="safe")
+        return torch.from_numpy(array)
+
+
+class ContinuousTimeImageDataset(BaseContinuousTimeDataset):
+    """Just a continuous time dataset loading images."""
+
+    def _raw_image_loader(self, path: str | Path) -> Tensor:
+        return torch.from_numpy(np.array(Image.open(path))).permute(2, 0, 1)
+
+
+class ContinuousTimeTIFFDataset(BaseContinuousTimeDataset):
+    """Just a continuous time dataset loading TIFF images."""
+
+    def _raw_image_loader(self, path: str | Path) -> Tensor:
+        # load
+        array = tifffile.imread(path)  # (C, H, W)
+        assert array.ndim == 3, f"Expected 3D array, got shape {array.shape} (hence {array.ndim}) at {path}"
+        # select channels (channel dim is expected to be the first one)
+        assert array.shape[0] < array.shape[1] and array.shape[0] < array.shape[2], (
+            f"Expected channel dim to be the first one, got shape {array.shape} at {path}"
+        )
+        # torch.from_numpy does not support uint16, so convert to int32 to not loose precision
+        if array.dtype == np.uint16:
+            array = array.astype(np.int32, casting="safe")
+        return torch.from_numpy(array)
+
+
+class ContinuousTimeImageDataset1D(BaseContinuousTimeDataset):
+    """Just a continuous time dataset loading 1-channel images."""
+
+    def _raw_image_loader(self, path: str | Path) -> Tensor:
+        return torch.from_numpy(np.array(Image.open(path))).unsqueeze(0)
+
+
+class ContinuousTimeImageDataset1Dto3D(BaseContinuousTimeDataset):
+    """Just a continuous time dataset loading 1-channel images, duplicating them to 3-channels."""
+
+    def _raw_image_loader(self, path: str | Path) -> Tensor:
+        arr_1D = np.array(Image.open(path))  # (H, W)
+        assert arr_1D.ndim == 2, f"Expected 2D array, got {arr_1D.ndim}D array at {path}"
+        arr_3D = np.tile(arr_1D[:, :, np.newaxis], (1, 1, 3))  # (H, W, 3)
+        return torch.from_numpy(arr_3D).permute(2, 0, 1)
+
+
+class RandomRotationSquareSymmetry(Transform):
+    """Randomly rotate the input by a multiple of π/2."""
+
+    def transform(self, inpt: Tensor, params) -> Tensor:
+        rot = 90 * np.random.randint(4)
+        return tf.rotate(inpt, rot)
+
+
+TimeKey = TypeVar("TimeKey", int, str)  # TODO: remove this mess and just use str from as early as possible
+
+
+def setup_dataloaders(
+    cfg: Config,
+    accelerator: Accelerator,
+    num_workers: int,
+    logger: MultiProcessAdapter,
+    this_run_folder: Path,
+    chckpt_save_path: Path,
+    debug: bool = False,
+):
+    """Returns a list of dataloaders for the dataset in cfg.dataset.name.
+
+    Each dataloader is a `torch.utils.data.DataLoader` over a custom `Dataset`.
+
+    Raw examples are expected to be found in `cfg.path` with the following general structure:
+
+    ```
+    |   - cfg.dataset.path
+    |   |   - timestep_1
+    |   |   |   - id_1.<ext>
+    |   |   |   - id_2.<ext>
+    |   |   |   - ...
+    |   |   |   - id_6687.<ext>
+    |   |   - timestep_2
+    |   |   |   - id_6688.<ext>
+    |   |   |   - ...
+    |   |   - ...
+    ```
+
+    –with the exception of fully ordered datasets where the data is *additionally* expected to be found
+    in a single parquet file with 'time' and 'file_path' columns. For those datasets, a train/test split
+    labels parquet generated by scripts/dataset_ordering.py can also be provided.
+
+    The train/test split that was saved to disk is reused if found
+    and if `cfg.checkpointing.resume_from_checkpoint is not False`.
+
+    TODO: move DatasetParams'params into the base DataSet class used in config
+    """
+    match cfg.dataset.name:
+        case "biotine_image" | "biotine_image_red_channel":
+            ds_params = DatasetParams(
+                file_extension="npy",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=NumpyDataset,
+            )
+        case "biotine_png" | "biotine_png_hard_aug":
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ImageDataset,
+            )
+        case (
+            "biotine_png_fully_ordered"
+            | "biotine_unpaired_fully_ordered"
+            | "biotine_paired_same_nb_as_unpaired_fully_ordered"
+        ):
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ContinuousTimeImageDataset,
+            )
+        case name if name.startswith("Jurkat") or name.startswith("BBBC048"):
+            phase_order = (
+                "G1",
+                "S",
+                "G2",
+                "Prophase",
+                "Metaphase",
+                "Anaphase",
+                "Telophase",
+            )
+            is_png = "brightfield" in name or "BBBC048" in name
+            phase_order_dict = {phase: index for index, phase in enumerate(phase_order)}
+            ds_params = DatasetParams(
+                file_extension="png" if is_png else "jpg",
+                key_transform=str,
+                sorting_func=lambda subdir: phase_order_dict[subdir.name],
+                dataset_class=ImageDataset1D if is_png else ImageDataset,
+            )
+            if "fully_ordered" in name:
+                ds_params.dataset_class = ContinuousTimeImageDataset1D
+        case name if "diabetic_retinopathy" in name:
+            ds_params = DatasetParams(
+                file_extension="jpeg",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ImageDataset,
+            )
+            if "fully_ordered" in name:
+                ds_params.dataset_class = ContinuousTimeImageDataset
+            if "precrop" in name:
+                ds_params.file_extension = "png"
+        case name if name.startswith("ependymal_"):
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ImageDataset,
+            )
+            if "fully_ordered" in name:
+                ds_params.dataset_class = ContinuousTimeImageDataset
+            if "separate_gt" in name:
+
+                def sorting_func(subdir: Path):
+                    if subdir.name == "all_imgs":
+                        return 0
+                    else:
+                        raise ValueError(f"unexpected subdir: {subdir}")
+
+                ds_params.key_transform = str
+                ds_params.sorting_func = sorting_func
+        case name if name.startswith("BBBC021_"):
+            if "docetaxel" in name:  # no DMSO
+                ds_params = DatasetParams(
+                    file_extension="png",
+                    key_transform=str,
+                    sorting_func=lambda subdir: float(subdir.name),
+                    dataset_class=ImageDataset,
+                )
+            elif "nocodazole" in name:  # with DMSO
+                noco_classes_in_order = (
+                    "DMSO",
+                    "nocodazole_0.001",
+                    "nocodazole_0.003",
+                    "nocodazole_0.01",
+                    "nocodazole_0.03",
+                    "nocodazole_0.1",
+                    "nocodazole_0.3",
+                    "nocodazole_1.0",
+                    "nocodazole_3.0",
+                )
+                ds_params = DatasetParams(
+                    file_extension="png",
+                    key_transform=str,
+                    sorting_func=lambda subdir: noco_classes_in_order.index(subdir.name),
+                    dataset_class=ContinuousTimeImageDataset,
+                )
+            else:
+                raise ValueError(f"Name not recognized: {name}")
+            if "fully_ordered" in name:
+                ds_params.dataset_class = ContinuousTimeImageDataset
+        case "chromalive_tl_24h_380px":
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=str,
+                sorting_func=lambda subdir: int(subdir.name.split("_")[1]),
+                dataset_class=ImageDataset,
+            )
+        case "chromaLive6h_4ch_tif_patches_380px":
+            ds_params = DatasetParams(
+                file_extension="tif",
+                key_transform=str,
+                sorting_func=lambda subdir: int(subdir.name.split("_")[1]),
+                dataset_class=TIFFDataset,
+            )
+        case "chromaLive6h_3ch_png_patches_380px" | "chromaLive6h_3ch_png_patches_380px_hard_aug":
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=str,
+                sorting_func=lambda subdir: int(subdir.name.split("_")[1]),
+                dataset_class=ImageDataset,
+            )
+        case (
+            "chromaLive6h_3ch_png_patches_380px_fully_ordered"
+            | "chromaLive6h_3ch_png_patches_380px_doses_10_11_combined_fully_ordered"
+        ):
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=str,
+                sorting_func=lambda subdir: int(subdir.name.split("_")[1]),
+                dataset_class=ContinuousTimeImageDataset,
+            )
+        case "NASH_fibrosis":
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ImageDataset,
+            )
+        case "NASH_fibrosis_fully_ordered_dinov2_regs_giant_ds_preproc":
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ContinuousTimeImageDataset,
+            )
+        case "NASH_steatosis":
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ImageDataset,
+            )
+        case "NASH_steatosis_fully_ordered_dinov2_regs_giant_ds_preproc":
+            ds_params = DatasetParams(
+                file_extension="png",
+                key_transform=int,
+                sorting_func=lambda subdir: int(subdir.name),
+                dataset_class=ContinuousTimeImageDataset,
+            )
+        case name if name.startswith("deepcycle"):
+            ds_params = DatasetParams(
+                file_extension="tif",
+                key_transform=str,
+                sorting_func=lambda subdir: int(subdir.name[1]),
+                dataset_class=ContinuousTimeTIFFDataset,
+            )
+        case name if name.startswith("human_embryo"):
+            PHASES_ORDER = (
+                "tPB2",
+                "tPNa",
+                "tPNf",
+                "t2",
+                "t3",
+                "t4",
+                "t5",
+                "t6",
+                "t7",
+                "t8",
+                "t9+",
+                "tM",
+                "tSB",
+                "tB",
+                "tEB",
+            )
+            ds_params = DatasetParams(
+                file_extension="jpeg",
+                key_transform=str,
+                sorting_func=lambda subdir: PHASES_ORDER.index(subdir.name),
+                dataset_class=ContinuousTimeImageDataset1D,
+            )
+            # needed for quite some human embryo images that have premature end of JPEG file
+            ImageFile.LOAD_TRUNCATED_IMAGES = True
+        case _:
+            raise ValueError(f"Unknown dataset name: {cfg.dataset.name}")
+
+    if issubclass(ds_params.dataset_class, BaseContinuousTimeDataset):
+        if "Jurkat_brightfield" in cfg.dataset.name or "BBBC048" in cfg.dataset.name:
+            ds_params_discrete = dataclass_replace(ds_params, dataset_class=ImageDataset1D)
+        elif "deepcycle" in cfg.dataset.name:
+            ds_params_discrete = dataclass_replace(ds_params, dataset_class=TIFFDatasetNoPermute)
+        elif "human_embryo" in cfg.dataset.name:
+            ds_params_discrete = dataclass_replace(ds_params, dataset_class=ImageDataset1D)
+        else:
+            ds_params_discrete = dataclass_replace(ds_params, dataset_class=ImageDataset)
+    else:
+        ds_params_discrete = ds_params
+
+    train_dataloaders_dict, test_dataloaders_dict, dataset_params = _dataset_builder(
+        cfg,
+        accelerator,
+        ds_params_discrete,
+        num_workers,
+        logger,
+        this_run_folder,
+        chckpt_save_path,
+        debug,
+    )
+
+    if cfg.dataset.fully_ordered:
+        fully_ordered_dataloader, fully_ordered_train_ds, fully_ordered_test_ds = _dataset_builder_fully_ordered(
+            cfg, accelerator, logger, this_run_folder, ds_params, num_workers
+        )
+    else:
+        fully_ordered_dataloader, fully_ordered_train_ds, fully_ordered_test_ds = None, None, None
+
+    return (
+        train_dataloaders_dict,
+        test_dataloaders_dict,
+        dataset_params,
+        fully_ordered_dataloader,
+        fully_ordered_train_ds,
+        fully_ordered_test_ds,
+    )
+
+
+def compute_continuous_time_weights(
+    logger: MultiProcessAdapter, times: np.ndarray, save_path: Path, n_bins: int = 100
+) -> list[float]:
+    """Computes weights for continuous time data based on the distribution of times."""
+    assert times.ndim == 1, f"Expected 1D array of times, got {times.ndim}D"
+    # Compute histogram of times
+    counts, bin_edges = np.histogram(times, bins=n_bins)
+    logger.debug(f"Computed histogram with {n_bins} bins, counts: {counts}, bin edges: {bin_edges}")
+    # Put times inbetween bins
+    # such that returned index i satisfies bins[i-1] <= x < bins[i]
+    # exclude last bin edge so that samples at time=1 are in the [t=0.99, t=1.0) bin
+    #                     ↓                                                    ↑
+    # (well [t=0.99, t=1.0] now...)
+    bin_indices = np.digitize(times, bin_edges[:-1])
+    # now 1 <= bin_indices <= n_bins
+    assert np.all(bin_indices >= 1) and np.all(bin_indices <= n_bins), (
+        f"Expected bin indices in [1, {n_bins}], got min={bin_indices.min()}, max={bin_indices.max()}"
+    )
+    # normalize counts by weights
+    zero_counts = counts == 0
+    # no divide by 0 in weights compute below because count 0 => nobody in that bin!
+    weights = [float(1.0 / counts[idx - 1]) for idx in bin_indices]
+    # Plot the "weighted counts"
+    weighted_counts = np.zeros(n_bins)
+    for idx, w in zip(bin_indices, weights, strict=True):
+        weighted_counts[idx - 1] += w
+    msg = f"Computed weights, resulting in 'weighted counts': {weighted_counts} (should be allclose to 1)"
+    # weighted_counts is initialized to 0 and stays 0 for bins with 0 counts
+    if not np.allclose(weighted_counts[~zero_counts], 1.0):
+        logger.error(msg)
+    else:
+        logger.debug(msg)
+    # plot histogram of counts per time, and weight curve
+    _plot_continuous_time_weights_simple(times, np.asarray(weights), bin_edges, counts, save_path, logger)
+    return weights
+
+
+def _plot_continuous_time_weights_simple(
+    times: np.ndarray,
+    weights: np.ndarray,
+    bin_edges: np.ndarray,
+    counts: np.ndarray,
+    save_path: Path,
+    logger: MultiProcessAdapter,
+) -> None:
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    width = (bin_edges[1] - bin_edges[0]) * 0.9 if len(bin_edges) > 1 else 1.0
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 6))
+
+    # 1) counts per time bin
+    axes[0].bar(bin_centers, counts, width=width)
+    axes[0].set_title("Counts per time bin")
+    axes[0].set_xlabel("time")
+    axes[0].set_ylabel("count")
+
+    # 2) weights per time bin
+    ordering_permutation = np.argsort(times)
+    axes[1].plot(times[ordering_permutation], weights[ordering_permutation])
+    axes[1].set_title("Weights vs time")
+    axes[1].set_xlabel("time")
+    axes[1].set_ylabel("weight")
+
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved weights plot to {save_path}")
+
+
+def continuous_ds_collate_fn(batch: list[BaseContinuousTimeDatasetReturnValue]):
+    times = [sample.time for sample in batch]
+    tensors = [sample.tensor for sample in batch]
+    return {"images": torch.stack(tensors), "times": torch.tensor(times)}
+
+
+def _dataset_builder_fully_ordered(
+    cfg: Config,
+    accelerator: Accelerator,
+    logger: MultiProcessAdapter,
+    this_run_folder: Path,
+    ds_params: DatasetParams,
+    num_workers: int,
+    train_split_frac: float = 0.9,  # TODO: set as config param and add warning if changed vs checkpoint (implies saving it)
+):
+    """Builds the train data loader for fully ordered datasets."""
+    assert cfg.dataset.fully_ordered, "This function is only for fully ordered datasets"
+    assert issubclass(ds_params.dataset_class, BaseContinuousTimeDataset), (
+        f"Expected a BaseContinuousTimeDataset, got {ds_params.dataset_class}"
+    )
+    assert cfg.dataset.path_to_single_parquet is not None, (
+        f"Expected cfg.dataset.path_to_single_parquet to be set, got {cfg.dataset.path_to_single_parquet}"
+    )
+
+    # 1. Get train & test splits
+    build_new_train_test_split = True
+    if cfg.checkpointing.resume_from_checkpoint is not False:
+        saved_splits_exist = (
+            Path(this_run_folder, "train_samples.parquet").exists()
+            and Path(this_run_folder, "test_samples.parquet").exists()
+        )
+        if not saved_splits_exist:
+            logger.warning("No train/test split saved to disk found; building new one")
+        else:
+            logger.info("Loading existing train/test splits")
+            build_new_train_test_split = False
+
+    if build_new_train_test_split:
+        all_train_files, all_test_files = _build_train_test_splits_fully_ordered(
+            cfg, logger, train_split_frac, accelerator
+        )
+    else:
+        all_train_files, all_test_files = load_train_test_splits_fully_ordered(this_run_folder, logger)
+
+    # 2. Build train & test dataloaders
+    if type(cfg.dataset.transforms) not in (Compose, Compose_v2):
+        transforms: Compose | Compose_v2 = instantiate(cfg.dataset.transforms)
+    else:
+        transforms = cfg.dataset.transforms
+
+    # no flips nor rotations for test data for consistent evaluation
+    test_transforms, _ = remove_flips_and_rotations_from_transforms(transforms)
+    logger.warning(
+        f"Using transforms: {transforms} over expected initial data range={cfg.dataset.expected_initial_data_range}"
+    )
+    logger.warning(f"Using test transforms: {test_transforms}")
+
+    # 3. Save train/test split to disk if new
+    if build_new_train_test_split and accelerator.is_main_process:
+        all_train_files.to_parquet(this_run_folder / "train_samples.parquet")
+        all_test_files.to_parquet(this_run_folder / "test_samples.parquet")
+        logger.info("Saved new train & test samples to train_samples.parquet & test_samples.parquet")
+    accelerator.wait_for_everyone()
+
+    # 4. Print some info about the datasets
+    logger.info(f"Train dataset has {len(all_train_files)} samples")
+    logger.info(f"Test dataset has {len(all_test_files)} samples")
+
+    # 5. Build the train & test datasets
+    train_ds = ds_params.dataset_class(
+        df=all_train_files,
+        transforms=transforms,
+        expected_initial_data_range=cfg.dataset.expected_initial_data_range,
+    )
+    test_ds = ds_params.dataset_class(
+        df=all_test_files,
+        transforms=test_transforms,
+        expected_initial_data_range=cfg.dataset.expected_initial_data_range,
+    )
+
+    # 6. Reweight (or not) the train dataloader sampling
+    if cfg.training.reweight_sampling:
+        times = train_ds.df["time"].to_numpy()
+        logger.warning(f"Computing sampling weights for {len(times)} samples")
+        weights = compute_continuous_time_weights(logger, times, this_run_folder / "train_time_weights.png")
+        sampler = WeightedRandomSampler(weights, len(weights))
+    else:
+        logger.warning("Not reweighting train dataloader sampling")
+        sampler = None
+
+    # 7. Build the train dataloader
+    train_dl = DataLoader(
+        train_ds,
+        batch_size=cfg.training.train_batch_size,
+        sampler=sampler,
+        shuffle=sampler is None,
+        num_workers=num_workers,
+        prefetch_factor=cfg.dataloaders.train_prefetch_factor,
+        pin_memory=cfg.dataloaders.pin_memory,
+        persistent_workers=cfg.dataloaders.persistent_workers,
+        collate_fn=continuous_ds_collate_fn,
+        drop_last=True,  # "needed" because of a check in training loop that expects a full batch
+    )
+
+    return train_dl, train_ds, test_ds
+
+
+def _dataset_builder(
+    cfg: Config,
+    accelerator: Accelerator,
+    dataset_params: DatasetParams,
+    num_workers: int,
+    logger: MultiProcessAdapter,
+    this_run_folder: Path,
+    chckpt_save_path: Path,
+    debug: bool = False,
+    train_split_frac: float = 0.9,  # TODO: set as config param and add warning if changed vs checkpoint (implies saving it)
+) -> tuple[dict[TimeKey, DataLoader], dict[TimeKey, DataLoader], DatasetParams]:
+    """Builds the train & test dataloaders."""
+
+    # Get train & test splits for each time
+    build_new_train_test_split = True
+    if cfg.checkpointing.resume_from_checkpoint is not False:
+        saved_splits_exist = (
+            Path(this_run_folder, "train_samples.json").exists() and Path(this_run_folder, "test_samples.json").exists()
+        )
+        if not saved_splits_exist:
+            logger.warning("No train/test split saved to disk found; building new one")
+        else:
+            logger.info("Loading existing train/test splits")
+            build_new_train_test_split = False
+
+    if build_new_train_test_split:
+        all_train_files, all_test_files = _build_train_test_splits(
+            cfg,
+            accelerator,
+            dataset_params,
+            logger,
+            debug,
+            train_split_frac,
+            chckpt_save_path,
+        )
+    else:
+        all_train_files, all_test_files = load_train_test_splits(this_run_folder, logger)
+
+    assert all_train_files.keys() == all_test_files.keys(), (
+        f"Expected same timestamps between train and test split, got: {all_train_files.keys()} vs {all_test_files.keys()}"
+    )
+    timestamps = list(all_train_files.keys())
+
+    # Build train datasets & test dataloaders
+    train_dataloaders_dict = {}
+    test_dataloaders_dict = {}
+    if type(cfg.dataset.transforms) not in (Compose, Compose_v2):
+        transforms: Compose | Compose_v2 = instantiate(cfg.dataset.transforms)
+    else:
+        transforms = cfg.dataset.transforms
+    # remove flips and rotations if as_many_samples_as_unpaired and hard augmented dataset used
+    if cfg.training.as_many_samples_as_unpaired and "_hard_augmented" not in Path(cfg.dataset.path).name:
+        transforms, removed_transforms = remove_flips_and_rotations_from_transforms(transforms)
+        logger.warning(
+            f"as_many_samples_as_unpaired is True and '_hard_augmented' in dataset path ({cfg.dataset.path}): removed flips and rotations ({removed_transforms}) from transforms"
+        )
+    # no flips nor rotations for consistent evaluation
+    test_transforms, _ = remove_flips_and_rotations_from_transforms(transforms)
+    logger.warning(
+        f"Using transforms: {transforms} over expected initial data range={cfg.dataset.expected_initial_data_range}"
+    )
+    logger.warning(f"Using test transforms: {test_transforms}")
+    if debug:
+        logger.warning("Debug mode: limiting test dataloader to 2 evaluation batch")
+
+    # time per time
+    train_reprs_to_log: list[str] = []  # logging utilities
+    test_reprs_to_log: list[str] = []  # logging utilities
+    for timestamp in timestamps:
+        ### Create train dataloader
+        train_files = all_train_files[timestamp]
+        train_ds: BaseDataset = dataset_params.dataset_class(
+            samples=train_files,
+            transforms=transforms,
+            expected_initial_data_range=cfg.dataset.expected_initial_data_range,
+        )
+        assert train_ds[0].shape == cfg.dataset.data_shape, (
+            f"Expected data shape of {cfg.dataset.data_shape} but got {train_ds[0].shape}"
+        )
+        train_reprs_to_log.append(train_ds.short_str(timestamp))
+        # batch_size does *NOT* correspond to the actual train batch size
+        # *Time-interpolated* batches will be manually built afterwards!
+        train_dataloaders_dict[timestamp] = DataLoader(
+            train_ds,
+            # in average we need train_batch_size/2 samples per empirical dataset to form a train batch;
+            # with this batch size, 2 empirical batches max will be needed per train batch and dataset,
+            # so with at least 1 prefetch we should get decent perf
+            # (at max 3 dataloader batch samplings per train batch)
+            batch_size=max(1, cfg.training.train_batch_size // 2),
+            shuffle=True,
+            num_workers=num_workers,
+            prefetch_factor=cfg.dataloaders.train_prefetch_factor,
+            pin_memory=cfg.dataloaders.pin_memory,
+            persistent_workers=cfg.dataloaders.persistent_workers,
+        )
+        ### Create test dataloader
+        test_files = all_test_files[timestamp]
+        test_ds: BaseDataset = dataset_params.dataset_class(
+            samples=test_files,
+            transforms=test_transforms,
+            expected_initial_data_range=cfg.dataset.expected_initial_data_range,
+        )
+        assert test_ds[0].shape == cfg.dataset.data_shape, (
+            f"Expected data shape of {cfg.dataset.data_shape} but got {test_ds[0].shape}"
+        )
+        test_reprs_to_log.append(test_ds.short_str(timestamp))
+        test_dataloaders_dict[timestamp] = DataLoader(
+            test_ds,
+            batch_size=cfg.evaluation.batch_size,
+            shuffle=False,  # keep the order for consistent logging
+        )
+
+    # Save train/test split to disk if new
+    if build_new_train_test_split and accelerator.is_main_process:
+        # train
+        serializable_train_files: dict[TimeKey | str, str | list[str]] = {
+            time: [p.name for p in list_paths] for time, list_paths in all_train_files.items()
+        }
+        serializable_train_files["root_dir"] = Path(cfg.dataset.path).as_posix()
+        with Path(this_run_folder, "train_samples.json").open("w") as f:
+            json.dump(serializable_train_files, f)
+        # test
+        serializable_test_files: dict[TimeKey | str, str | list[str]] = {
+            time: [p.name for p in list_paths] for time, list_paths in all_test_files.items()
+        }
+        serializable_test_files["root_dir"] = Path(cfg.dataset.path).as_posix()
+        with Path(this_run_folder, "test_samples.json").open("w") as f:
+            json.dump(serializable_test_files, f)
+        logger.info("Saved new train & test samples to train_samples.json & test_samples.json")
+
+    # Print some info about the datasets
+    _print_short_datasets_info(train_reprs_to_log, logger, "Train datasets:")
+    _print_short_datasets_info(test_reprs_to_log, logger, "Test datasets:")
+
+    # Return the dataloaders
+    return train_dataloaders_dict, test_dataloaders_dict, dataset_params
+
+
+def _build_train_test_splits(
+    cfg: Config,
+    accelerator: Accelerator,
+    dataset_params: DatasetParams,
+    logger: MultiProcessAdapter,
+    debug: bool,
+    train_split_frac: float,
+    chckpt_save_path: Path,
+) -> tuple[dict[TimeKey, list[Path]], dict[TimeKey, list[Path]]]:
+    # Get subdirs/timestamps and sort them
+    database_path = Path(cfg.dataset.path)
+    subdirs = [e for e in database_path.iterdir() if e.is_dir() and not e.name.startswith(".")]
+    subdirs.sort(key=dataset_params.sorting_func)  # sort by time!
+    if len(subdirs) == 0:
+        logger.warning(f"No subdirs found in {database_path}; using base path directly")
+        subdirs = [database_path]
+
+    # Get all files all times
+    files_dict_per_time: dict[TimeKey, list[Path]] = {}
+    for subdir in subdirs:
+        subdir_files = list(subdir.glob(f"*.{dataset_params.file_extension}"))
+        timestep = subdir.name
+        timestep = dataset_params.key_transform(timestep)
+        files_dict_per_time[timestep] = subdir_files  # pyright: ignore[reportArgumentType]
+    tot_nb_files_found = sum([len(f) for f in files_dict_per_time.values()])
+    assert tot_nb_files_found != 0, f"No files found in {database_path} with extension {dataset_params.file_extension}"
+    logger.debug(f"Found {tot_nb_files_found} files in total")
+
+    # Select times
+    if not OmegaConf.is_missing(cfg.dataset, "selected_dists") and cfg.dataset.selected_dists is not None:
+        files_dict_per_time = {k: v for k, v in files_dict_per_time.items() if k in cfg.dataset.selected_dists}
+        assert files_dict_per_time is not None and len(files_dict_per_time) >= 2, (
+            f"No or less than 2 times selected: cfg.dataset.selected_dists is {cfg.dataset.selected_dists} resulting in selected timesteps {list(files_dict_per_time.keys())}"
+        )
+        logger.info(f"Selected {len(files_dict_per_time)} timesteps")
+    else:
+        logger.info(f"No timesteps selected, using all available {len(files_dict_per_time)}")
+
+    # Use time-unpaired data if asked for
+    # (does not assume all videos span the same/total time range)
+    # This runs on main process only because we want the same unpaired dataset for all processes!
+    # (random sample selection happens here)
+    if cfg.training.unpaired_data:
+        # unpaired dataset information will be saved there
+        ds_tmp_save_path = chckpt_save_path / ".unpaired_dataset_from_main.pkl"
+        # Build the unpaired dataset on main
+        if accelerator.is_main_process:
+            logger.warning("Building time-unpaired dataset on main process")
+            video_ids_times: dict[str, dict[TimeKey, Path]] = {}  # dict[video_id, dict[time, file]]
+            time_key_to_time_id: dict[TimeKey, set[str]] = {time_key: set() for time_key in files_dict_per_time}
+            # fill dict
+            for time, files in files_dict_per_time.items():
+                for f in files:
+                    video_id, time_id = extract_video_id(f.stem)
+                    time_key_to_time_id[time].add(time_id)
+                    if video_id not in video_ids_times:
+                        video_ids_times[video_id] = {time: f}
+                    else:
+                        assert time not in video_ids_times[video_id], (
+                            f"Found multiple files at time {time} for video {video_id}: {f} and {video_ids_times[video_id][time]}"
+                        )
+                        video_ids_times[video_id][time] = f
+            # check 1-to-1 mapping between found time ids and time keys
+            assert all(len(time_key_to_time_id[time_key]) == 1 for time_key in files_dict_per_time), (
+                f"Found multiple time ids for some time keys: time_key_to_time_id={time_key_to_time_id}"
+            )
+            # select one time at random for each video_id
+            unpaired_files_dict_per_time: dict[TimeKey, list[Path]] = {}
+            for times_files_d in video_ids_times.values():
+                time = random.choice(list(times_files_d.keys()))
+                selected_frame = times_files_d[time]
+                if time not in unpaired_files_dict_per_time:
+                    unpaired_files_dict_per_time[time] = [selected_frame]
+                else:
+                    unpaired_files_dict_per_time[time].append(selected_frame)
+            # checks
+            assert files_dict_per_time.keys() == unpaired_files_dict_per_time.keys(), (
+                f"Some times are missing in the unpaired dataset! original: {files_dict_per_time.keys()} vs unpaired: {unpaired_files_dict_per_time.keys()}"
+            )
+            # re-sort per time now that we know all times are present
+            unpaired_files_dict_per_time = {
+                common_key: unpaired_files_dict_per_time[common_key] for common_key in files_dict_per_time
+            }
+            logger.info(
+                f"Unpaired dataset built with {sum([len(f) for f in unpaired_files_dict_per_time.values()])} files in total"
+            )
+            # save this dict of Paths lists to disk
+            with open(ds_tmp_save_path, "wb") as f:
+                pickle.dump(unpaired_files_dict_per_time, f)
+            logger.debug(f"Saved unpaired dataset to {ds_tmp_save_path} on main")
+        # wait for main to finish building & saving the unpaired dataset
+        accelerator.wait_for_everyone()
+        with open(ds_tmp_save_path, "rb") as f:
+            unpaired_files_dict_per_time = pickle.load(f)
+        files_dict_per_time = unpaired_files_dict_per_time
+
+    # Split train/test
+    all_train_files: dict[TimeKey, list[Path]] = {}
+    all_test_files: dict[TimeKey, list[Path]] = {}
+    for timestamp, files in files_dict_per_time.items():
+        if debug:
+            # test_idxes are different between processes but that's fine for debug
+            test_idxes = random.sample(
+                range(len(files)),
+                min(2 * cfg.evaluation.batch_size, int(0.9 * len(files))),
+            )
+            test_files = [files[i] for i in test_idxes]
+            train_files = [f for f in files if f not in test_files]
+        else:
+            # Compute the split index TODO: randomize but with same result across processes!!!
+            split_idx = int(train_split_frac * len(files))
+            train_files = files[:split_idx]
+            test_files = files[split_idx:]
+        assert set(train_files) | set(test_files) == set(files), (
+            f"Expected train_files + test_files == all files, but got {len(train_files)}, {len(test_files)}, and {len(files)} elements respectively"
+        )
+        all_train_files[timestamp] = train_files
+        all_test_files[timestamp] = test_files
+
+    # use as many training samples as the hard augmented, unpaired version if asked for
+    # TODO: move checks to the config composition (should always be checked anyway)
+    if cfg.training.as_many_samples_as_unpaired:
+        assert not cfg.training.unpaired_data, "as_many_samples_as_unpaired and unpaired_data are mutually exclusive"
+        # mult_factor = 1 if using already augmented dataset, 8 otherwise
+        if "_hard_augmented" in Path(cfg.dataset.path).name:
+            mult_factor = 1
+        else:
+            mult_factor = 8  # x8 augmentation is hard-coded here
+        logger.warning(
+            f"Using as many samples as the unpaired, x8 hard-augmented dataset: will multiply by {round(mult_factor // len(files_dict_per_time), 2)}"
+        )
+        for timestep, files in files_dict_per_time.items():
+            orig_nb_samples = len(files)
+            nb_samples_if_unpaired = orig_nb_samples * mult_factor // len(files_dict_per_time)
+            all_train_files[timestep] = random.sample(files, nb_samples_if_unpaired)
+
+    return all_train_files, all_test_files
+
+
+def _build_train_test_splits_fully_ordered(
+    cfg: Config, logger: MultiProcessAdapter, train_split_frac: float, accelerator: Accelerator
+):
+    # checks
+    assert cfg.dataset.fully_ordered, "This function is only for fully ordered datasets"
+    assert cfg.dataset.path_to_single_parquet is not None, "cfg.dataset.path_to_single_parquet is not set"
+
+    # load single parquet file
+    data = pd.read_parquet(cfg.dataset.path_to_single_parquet)
+    logger.debug(f"Found {len(data)} files in total in parquet file")
+
+    # checks
+    assert (data.columns == CONTINUOUS_DF_COLUMNS).all(), (
+        f"Expected columns {CONTINUOUS_DF_COLUMNS}, got {data.columns}"
+    )
+    if cfg.training.unpaired_data:
+        raise NotImplementedError("TODO?")
+    if cfg.training.as_many_samples_as_unpaired:
+        raise NotImplementedError("TODO?")
+
+    # split from dataset_ordering.py output labels if provided
+    if cfg.dataset.path_to_train_test_labels_parquet is not None:
+        split_labels_path = Path(cfg.dataset.path_to_train_test_labels_parquet)
+        logger.info(f"Loading train/test split labels for fully ordered dataset from {split_labels_path}")
+        split_labels_data = pd.read_parquet(split_labels_path)
+        if set(split_labels_data.columns) != set(CONTINUOUS_SPLIT_LABELS_DF_COLUMNS):
+            err_msg = f"Expected columns {CONTINUOUS_SPLIT_LABELS_DF_COLUMNS} in {split_labels_path}, got {split_labels_data.columns.tolist()}"
+            logger.error(err_msg)
+            raise ValueError(err_msg)
+
+        unique_split_labels = set(split_labels_data["train_test_label"].unique())
+        if unique_split_labels != {"train", "test"}:
+            err_msg = f"Expected split labels to be exactly ['train', 'test'], got {sorted(unique_split_labels)} in {split_labels_path}"
+            logger.error(err_msg)
+            raise ValueError(err_msg)
+
+        data_paths = set(data["file_path"])
+        split_paths = set(split_labels_data["file_path"])
+        if data_paths != split_paths:
+            only_in_data = sorted(data_paths - split_paths)
+            only_in_split = sorted(split_paths - data_paths)
+            err_msg = (
+                f"Misaligned data between {cfg.dataset.path_to_single_parquet} and {split_labels_path}: "
+                f"{len(only_in_data)} paths only in dataset parquet and {len(only_in_split)} paths only in split labels parquet. "
+                f"Examples only in dataset parquet: {only_in_data[:3]} | only in split labels parquet: {only_in_split[:3]}"
+            )
+            logger.error(err_msg)
+            raise ValueError(err_msg)
+
+        try:
+            data_with_split = data.merge(split_labels_data, on="file_path", how="left", validate="one_to_one")
+        except pd.errors.MergeError as exc:
+            err_msg = f"Expected a one-to-one correspondence between {cfg.dataset.path_to_single_parquet} and {split_labels_path}: {exc}"
+            logger.error(err_msg)
+            raise ValueError(err_msg) from exc
+
+        train_data = data_with_split.loc[
+            data_with_split["train_test_label"] == "train", CONTINUOUS_DF_COLUMNS
+        ].reset_index(drop=True)
+        test_data = data_with_split.loc[
+            data_with_split["train_test_label"] == "test", CONTINUOUS_DF_COLUMNS
+        ].reset_index(drop=True)
+
+        logger.info(
+            f"Loaded exact train/test split from split labels parquet with lengths {len(train_data)} and {len(test_data)} respectively"
+        )
+        logger.info(
+            f"Per time number of samples:\n{
+                pd.concat(
+                    [
+                        train_data.groupby('true_label').size().sort_index().rename('train'),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                        test_data.groupby('true_label').size().sort_index().rename('test'),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                    ],
+                    axis=1,
+                )
+            }"
+        )
+        return train_data, test_data
+
+    # split into train/test at random
+    if accelerator.is_main_process:
+        random_seed = torch.randint(2**16, (1,), device=accelerator.device)
+    else:
+        random_seed = torch.zeros((1,), device=accelerator.device)
+    random_seed: Tensor = broadcast(random_seed)  # pyright: ignore[reportAssignmentType]
+    logger.debug(f"Broadcasted random seed: {random_seed.item()}")
+
+    train_data = data.groupby("true_label", group_keys=False).apply(
+        lambda x: x.sample(frac=train_split_frac, random_state=int(random_seed.item()))
+    )
+    test_data = data.drop(index=train_data.index.to_list()).reset_index(drop=True)
+    train_data = train_data.reset_index(drop=True)
+
+    logger.info(f"Built train & test splits with lengths {len(train_data)} and {len(test_data)} respectively")
+    logger.info(
+        f"Per time number of samples:\n{
+            pd.concat(
+                [
+                    train_data.groupby('true_label').size().sort_index().rename('train'),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                    test_data.groupby('true_label').size().sort_index().rename('test'),  # pyright: ignore[reportCallIssue, reportArgumentType]
+                ],
+                axis=1,
+            )
+        }"
+    )
+
+    return train_data, test_data
+
+
+def load_train_test_splits(
+    this_run_folder: Path, logger: MultiProcessAdapter
+) -> tuple[dict[TimeKey, list[Path]], dict[TimeKey, list[Path]]]:
+    def _load_split(path: str):
+        with Path(this_run_folder, path).open("r") as f:
+            this_split_files = json.load(f)
+        assert isinstance(this_split_files, dict), f"Expected a dict, got {type(this_split_files)}"
+        if "root_dir" in this_split_files:
+            root_dir = Path(this_split_files.pop("root_dir"))
+            if len(this_split_files) == 1:  # only one subdir -> no time dirs
+                assert "all_imgs" in this_split_files and root_dir.name == "all_imgs", (
+                    f"Expected 'all_imgs', got {this_split_files.keys()} and {root_dir.name}"
+                )
+                for time, list_names in this_split_files.items():
+                    this_split_files[time] = [root_dir / name for name in list_names]
+            else:
+                for time, list_names in this_split_files.items():
+                    this_split_files[time] = [root_dir / time / name for name in list_names]
+        else:  # legacy TODO: remove
+            for time, list_paths in this_split_files.items():
+                this_split_files[time] = [Path(path) for path in list_paths]
+
+        return this_split_files
+
+    all_train_files = _load_split("train_samples.json")
+    all_test_files = _load_split("test_samples.json")
+
+    logger.info("Loaded train & test samples from train_samples.json & test_samples.json")
+
+    return all_train_files, all_test_files
+
+
+def load_train_test_splits_fully_ordered(this_run_folder: Path, logger: MultiProcessAdapter):
+    # load
+    train_data = pd.read_parquet(this_run_folder / "train_samples.parquet")
+    test_data = pd.read_parquet(this_run_folder / "test_samples.parquet")
+
+    # checks
+    assert (
+        len(train_data.columns) == len(CONTINUOUS_DF_COLUMNS) and (train_data.columns == CONTINUOUS_DF_COLUMNS).all()
+    ), f"Expected columns {CONTINUOUS_DF_COLUMNS}, got {train_data.columns}"
+    assert (
+        len(test_data.columns) == len(CONTINUOUS_DF_COLUMNS) and (test_data.columns == CONTINUOUS_DF_COLUMNS).all()
+    ), f"Expected columns {CONTINUOUS_DF_COLUMNS}, got {test_data.columns}"
+
+    logger.info(
+        f"Loaded train & test samples from train_samples.parquet & test_samples.parquet with lengths {len(train_data)} and {len(test_data)} respectively"
+    )
+
+    return train_data, test_data
+
+
+def extract_video_id(filename: str) -> tuple[str, str]:
+    """
+    Ugly helper to extract video_id and time from a filename, using hard-coded rules.
+
+    TODO: include time key - finding regex in dataset config!
+    """
+    if m := re.search(r"_time_(\d+)_", filename):
+        time: str = m.group(1)
+        video_id = filename.replace(f"_time_{time}_", "_")
+    elif m := re.search(r"_T(\d+)_", filename):
+        time: str = m.group(1)
+        video_id = filename.replace(f"_T{time}_", "_")
+    else:
+        raise ValueError(f"Could not extract time from filename {filename}")
+
+    return video_id, time
+
+
+def remove_flips_and_rotations_from_transforms(transforms: Compose | Compose_v2):
+    """
+    Filter out `RandomHorizontalFlip`, `RandomVerticalFlip` and `RandomRotationSquareSymmetry` from `transforms`.
+
+    ### Return
+    - A new `Compose` object without the flips and rotations
+    - `list` of the types of the removed transforms
+    """
+    is_flip_or_rotation = lambda t: isinstance(  # noqa: E731
+        t,
+        RandomHorizontalFlip
+        | RandomVerticalFlip
+        | RandomRotationSquareSymmetry
+        | RandomHorizontalFlip_v2
+        | RandomVerticalFlip_v2,
+    )
+    kept_transforms = [t for t in transforms.transforms if not is_flip_or_rotation(t)]
+    removed_transforms = [type(t) for t in transforms.transforms if is_flip_or_rotation(t)]
+    return type(transforms)(kept_transforms), removed_transforms
+
+
+# limit number of printed datasets infos because of the terminal width: TODO: make it dynamic
+NB_DS_PRINTED_SINGLE_LINE = 14
+
+
+def _print_short_datasets_info(reprs_to_log: list[str], logger: MultiProcessAdapter, first_message: str):
+    padded_infos = []
+    tot_nb_lines = 0
+
+    for ds_idx in range(len(reprs_to_log)):
+        lines = reprs_to_log[ds_idx].split("\n")
+        if len(lines) > tot_nb_lines:
+            tot_nb_lines = len(lines)
+        max_cols = max([len(line) for line in lines])
+        padded_lines = [line.ljust(max_cols) for line in lines]
+        padded_infos.append("\n".join(padded_lines))
+
+    ds_indexes_slices = [
+        range(i, i + NB_DS_PRINTED_SINGLE_LINE) for i in range(0, len(reprs_to_log), NB_DS_PRINTED_SINGLE_LINE)
+    ]
+
+    complete_str = f"{first_message}\n"
+    for ds_slice in ds_indexes_slices:
+        for line in range(tot_nb_lines):
+            this_line_all_ds = [
+                padded_infos[ds_idx].split("\n")[line] for ds_idx in ds_slice if ds_idx < len(padded_infos)
+            ]
+            complete_str += " | ".join(this_line_all_ds) + "\n"
+        complete_str += "\n"
+    logger.info(complete_str)

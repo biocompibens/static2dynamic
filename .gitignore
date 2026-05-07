@@ -1,0 +1,35 @@
+############# Python
+__pycache__
+.ipynb_checkpoints
+
+############# VSCode
+.vscode
+*.code-workspace
+.github/copilot-instructions.md
+
+############# Venv
+.env
+.envrc
+
+############# Figures
+*.html
+*.png
+*.pt
+*.json
+*.pkl
+*.mkv
+*.mp4
+*.gif
+*.apng
+
+############# User conf
+my_conf
+
+############# Data
+notebooks/tmp_downloaded_eval_values
+*.csv
+
+############# Misc
+core-rg-*
+*.log
+pytorch_traces

@@ -1,0 +1,379 @@
+# Copyright 2024-2025 Thomas Boyer
+
+import logging
+from datetime import timedelta
+from math import sqrt
+from os import get_terminal_size
+from pathlib import Path
+
+import hydra
+import torch
+from accelerate import Accelerator
+from accelerate.logging import MultiProcessAdapter, get_logger
+from accelerate.utils import InitProcessGroupKwargs, ProjectConfiguration, TorchDynamoPlugin
+from diffusers.models.unets.unet_2d import UNet2DModel
+from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from hydra.core.config_store import ConfigStore
+from omegaconf import OmegaConf
+from rich.traceback import install
+from termcolor import colored
+from torch.optim.adamw import AdamW
+from torch.optim.lr_scheduler import LinearLR, OneCycleLR
+from torch.optim.optimizer import Optimizer
+from wandb.sdk.wandb_run import Run as WandBRun  # pyright: ignore[reportAttributeAccessIssue]
+
+from GaussianProxy.conf.training_conf import (
+    Config,
+    UNet2DConditionModelConfig,
+    UNet2DModelConfig,
+)
+from GaussianProxy.utils.data import setup_dataloaders
+from GaussianProxy.utils.misc import create_repo_structure, modify_args_for_debug, verify_model_configs
+from GaussianProxy.utils.models import VideoTimeEncoding
+from GaussianProxy.utils.training import TimeDiffusion, load_resuming_args
+from my_conf.my_training_conf import config
+
+# nice tracebacks
+install(width=200)
+
+# stop DEBUG log pollution
+logging.getLogger("matplotlib").setLevel(logging.INFO)
+logging.getLogger("PIL").setLevel(logging.INFO)
+
+# hardcoded config paths
+DEFAULT_CONFIG_PATH = "../my_conf"
+DEFAULT_CONFIG_NAME = "experiment_conf"
+
+# Register a new resolver for torch dtype in yaml files
+OmegaConf.register_new_resolver("torch_dtype", lambda x: getattr(torch, x))
+
+# Register the config
+cs = ConfigStore.instance()
+cs.store(name=DEFAULT_CONFIG_NAME, node=config)
+
+
+@hydra.main(
+    version_base=None,
+    config_path=DEFAULT_CONFIG_PATH,
+    config_name=DEFAULT_CONFIG_NAME,
+)
+def main(cfg: Config) -> None:
+    # ------------------------------------ Logging -----------------------------------
+    logger: MultiProcessAdapter = get_logger(Path(__file__).stem)
+
+    # ---------------------------------- Accelerator ---------------------------------
+    this_run_folder = Path(cfg.exp_parent_folder, cfg.project, cfg.run_name)
+    accelerator_project_config = ProjectConfiguration(
+        total_limit=cfg.checkpointing.checkpoints_total_limit,
+        automatic_checkpoint_naming=False,
+        project_dir=this_run_folder.as_posix(),
+    )
+
+    accelerator_kwargs = InitProcessGroupKwargs(timeout=timedelta(seconds=7200))  # 2 hours before NCCL timeout
+
+    if (dynamo_plugin_args := cfg.accelerate.launch_args.dynamo_plugin) is not None:
+        dynamo_plugin = TorchDynamoPlugin(**dynamo_plugin_args)
+    else:
+        dynamo_plugin = None
+
+    accelerator = Accelerator(
+        gradient_accumulation_steps=cfg.training.gradient_accumulation_steps,
+        log_with=cfg.logger,
+        project_config=accelerator_project_config,
+        kwargs_handlers=[accelerator_kwargs],
+        dynamo_plugin=dynamo_plugin,
+    )
+    try:
+        terminal_width = get_terminal_size().columns
+    except OSError:
+        terminal_width = 80
+    logger.info("#" * max(0, terminal_width - 44))
+    logger.info("Starting main train.py script")
+    logger.info("#" * max(0, terminal_width - 44))
+    logger.info(f"Accelerator state:\n{accelerator.state.__dict__}")
+
+    # ----------------------------- Repository Structure -----------------------------
+    (best_model_save_folder, last_model_save_folder, saved_artifacts_folder, chckpt_save_path) = create_repo_structure(
+        cfg, accelerator, logger, this_run_folder
+    )
+    accelerator.wait_for_everyone()
+
+    # ---------------------------- Retrieve Resuming Args ----------------------------
+    resuming_path = None  # pyright...
+    if cfg.checkpointing.resume_from_checkpoint is not False:
+        resuming_path, resuming_args = load_resuming_args(
+            cfg,
+            logger,
+            accelerator,
+            chckpt_save_path,
+            last_model_save_folder,
+        )
+    else:
+        resuming_args = None
+
+    # ------------------------------------- WandB ------------------------------------
+    # Handle run resuming with WandB
+    prev_run_id = None
+    prev_run_id_file = Path(accelerator_project_config.project_dir, "run_id.txt")
+    if prev_run_id_file.exists():
+        if cfg.checkpointing.resume_from_checkpoint is False:
+            logger.warning(
+                "Found a 'run_id.txt' file but 'resume_from_checkpoint' is False: ignoring this file and not resuming W&B run."
+            )
+        else:
+            with open(prev_run_id_file, encoding="utf-8") as f:
+                prev_run_id = f.readline().strip()
+            logger.info(
+                f"Found a 'run_id.txt' file and 'resume_from_checkpoint' is True; imposing wandb to resume the run with id {prev_run_id}"
+            )
+    else:
+        logger.info("No 'run_id.txt' file found; starting a new W&B run")
+
+    # Init W&B
+    init_kwargs: dict[str, dict[str, str | None]] = {
+        "wandb": {
+            "dir": cfg.exp_parent_folder,
+            "name": cfg.run_name,
+            "entity": cfg.entity,
+        }
+    }
+    if cfg.checkpointing.resume_from_checkpoint is not False and prev_run_id is not None:
+        # find start step
+        if resuming_args is None:
+            logger.warning("No resuming state found, will rewind run from zero!")
+            start_step = 0
+        else:
+            start_step = resuming_args.start_global_optimization_step
+        # fork, rewind, resume, or start a new wandb run from the previous run's latest checkpoint
+        match cfg.resume_method:
+            case "fork":
+                logger.info(f"Forking run {prev_run_id} from step {start_step}")
+                init_kwargs["wandb"]["fork_from"] = f"{prev_run_id}?_step={start_step}"
+            case "rewind":
+                logger.info(f"Rewinding run {prev_run_id} from step {start_step}")
+                init_kwargs["wandb"]["resume_from"] = f"{prev_run_id}?_step={start_step}"
+            case "new_run":
+                logger.info(
+                    f"Starting a new run from run {prev_run_id}'s latest checkpoint, but not resuming it in wandb"
+                )
+            case "resume":
+                logger.info(f"Resuming run {prev_run_id} from step {start_step}")
+                init_kwargs["wandb"]["id"] = prev_run_id
+                init_kwargs["wandb"]["resume"] = "must"
+            case _:
+                raise ValueError(
+                    f"Invalid resume method '{cfg.resume_method}'. Must be one of 'fork', 'rewind', 'new_run', or 'resume'."
+                )
+
+    accelerator.init_trackers(
+        project_name=cfg.project,
+        config=OmegaConf.to_container(cfg, resolve=True),  # pyright: ignore[reportArgumentType]
+        init_kwargs=init_kwargs,
+    )
+
+    # Access underlying run object on all processes (but only actually populated on main)
+    wandb_tracker: WandBRun = accelerator.get_tracker("wandb", unwrap=True)  # pyright: ignore[reportAssignmentType]
+
+    # Save the run id to a file on main process
+    if accelerator.is_main_process:
+        new_run_id = wandb_tracker.id
+        with open(prev_run_id_file, "w", encoding="utf-8") as f:
+            f.write(new_run_id)
+
+        logger.info(
+            f"Logging to: entity:{colored(cfg.entity, 'yellow', None, ['bold'])} | project:{colored(cfg.project, 'blue', None, ['bold'])} | run.name:{colored(cfg.run_name, 'magenta', None, ['bold'])} | run.id:{colored(wandb_tracker.id, 'magenta', None, ['bold'])}"
+        )
+
+    # ---------------------------------- Dataloaders ---------------------------------
+    num_workers = cfg.dataloaders.num_workers if cfg.dataloaders.num_workers is not None else accelerator.num_processes
+
+    (
+        train_dataloaders,
+        test_dataloaders,
+        dataset_params,
+        fully_ordered_dataloader,
+        fully_ordered_train_ds,
+        fully_ordered_test_ds,
+    ) = setup_dataloaders(cfg, accelerator, num_workers, logger, this_run_folder, chckpt_save_path, cfg.debug)
+    if fully_ordered_train_ds is not None:
+        logger.info(f"Using continuous time datasets (train/test):\n{fully_ordered_train_ds}\n{fully_ordered_test_ds}")
+
+    # ------------------------------------ Debug -------------------------------------
+    if cfg.debug:
+        modify_args_for_debug(
+            cfg,
+            logger,
+            wandb_tracker,
+            accelerator.is_main_process,
+            resuming_args.start_global_optimization_step if resuming_args is not None else 0,
+        )
+
+    # ------------------------------------- Net -------------------------------------
+    # get net type
+    if type(OmegaConf.to_object(cfg.net)) == UNet2DModelConfig:
+        net_type = UNet2DModel
+    elif type(OmegaConf.to_object(cfg.net)) == UNet2DConditionModelConfig:
+        net_type = UNet2DConditionModel
+    else:
+        raise ValueError(f"Invalid type for 'cfg.net': {type(cfg.net)}")
+
+    # load pretrained model if resuming from a "model save"
+    if cfg.checkpointing.resume_from_checkpoint == "model_save" and resuming_path is not None:
+        # load models
+        logger.info(f"Loading pretrained net from {resuming_path / 'net'}")
+        net: UNet2DModel | UNet2DConditionModel = net_type.from_pretrained(resuming_path / "net")  # pyright: ignore[reportAssignmentType]
+        logger.info(f"Loading video time encoder net from {resuming_path / 'video_time_encoder'}")
+        video_time_encoding: VideoTimeEncoding = VideoTimeEncoding.from_pretrained(resuming_path / "video_time_encoder")  # pyright: ignore[reportAssignmentType]
+
+        if accelerator.is_main_process:
+            # check consistency between declared config and loaded one
+            declared_net_config = net_type(**OmegaConf.to_container(cfg.net)).config  # pyright: ignore[reportCallIssue]
+            verify_model_configs(net.config, declared_net_config, "net")
+            declared_time_encoder_config = VideoTimeEncoding(**OmegaConf.to_container(cfg.time_encoder)).config  # pyright: ignore[reportCallIssue]
+            verify_model_configs(video_time_encoding.config, declared_time_encoder_config, "time encoder")
+
+    # else start from scratch (and maybe resume from a "proper checkpoint" just before fitting)
+    else:
+        # it's ugly but Hydra's instantiate produces weird errors (even with _convert="all"!?) TODO
+        net = net_type(**OmegaConf.to_container(cfg.net))  # pyright: ignore[reportCallIssue]
+        video_time_encoding = VideoTimeEncoding(**OmegaConf.to_container(cfg.time_encoder))  # pyright: ignore[reportCallIssue]
+
+    nb_params_M = round(net.num_parameters() / 1e6)
+    nb_params_M_trainable = round(net.num_parameters(True) / 1e6)
+    logger.info(f"Net has ~{nb_params_M}M parameters (~{nb_params_M_trainable}M trainable)")
+
+    nb_params_M = round(video_time_encoding.num_parameters() / 1e3)
+    nb_params_M_trainable = round(video_time_encoding.num_parameters(True) / 1e3)
+    logger.info(f"VideoTimeEncoding has ~{nb_params_M}K parameters (~{nb_params_M_trainable}K trainable)")
+
+    # --------------------------------- Miscellaneous ---------------------------------
+    # PyTorch mixed precision
+    torch.backends.fp32_precision = "tf32"  # pyright: ignore[reportAttributeAccessIssue]
+    # also set the old flags, otherwise inductor fails
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    # do benchmarking
+    torch.backends.cudnn.benchmark = True
+
+    # ----------------------------------- Evaluation ----------------------------------
+    logger.info(f"Will use evaluation: {cfg.evaluation}")
+
+    # ----------------------------------- Optimizer -----------------------------------
+    # scale the learning rate with the square root of the number of GPUs
+    scale = sqrt(accelerator.num_processes)
+    logger.info(f"Scaling learning rate with the (square root of the) number of GPUs (×{round(scale, 3)})")
+
+    # find the correct base learning rate to 1) scale 2) feed to the optimizer
+    if cfg.lr_scheduler.name == "OneCycleLRConfig":
+        cfg.lr_scheduler.max_lr *= scale
+        base_optimizer_lr = cfg.lr_scheduler.max_lr / cfg.lr_scheduler.div_factor
+    elif cfg.lr_scheduler.name == "LinearLRConfig":
+        cfg.lr_scheduler.base_lr *= scale
+        base_optimizer_lr = cfg.lr_scheduler.base_lr
+    else:
+        raise ValueError(f"Invalid lr_scheduler config name: {cfg.lr_scheduler.name}")
+
+    optimizer: Optimizer = AdamW(
+        params=list(net.parameters()) + list(video_time_encoding.parameters()),
+        lr=base_optimizer_lr,
+    )
+    logger.debug(f"Using optimizer before LR scheduler calling: {optimizer}")
+
+    # ---------------------------- Learning Rate Scheduler ----------------------------
+    if cfg.lr_scheduler.name == "OneCycleLRConfig":
+        lr_scheduler = OneCycleLR(
+            optimizer=optimizer,
+            total_steps=cfg.training.nb_time_samplings,
+            max_lr=cfg.lr_scheduler.max_lr,
+            pct_start=cfg.lr_scheduler.pct_start,
+            anneal_strategy=cfg.lr_scheduler.anneal_strategy,  # pyright: ignore[reportArgumentType]
+            div_factor=cfg.lr_scheduler.div_factor,
+            final_div_factor=cfg.lr_scheduler.final_div_factor,
+        )
+    elif cfg.lr_scheduler.name == "LinearLRConfig":
+        lr_scheduler = LinearLR(
+            optimizer=optimizer,
+            total_iters=cfg.training.nb_time_samplings,
+            start_factor=cfg.lr_scheduler.start_factor,
+            end_factor=cfg.lr_scheduler.end_factor,
+        )
+    else:
+        raise ValueError(f"Invalid lr_scheduler config name: {cfg.lr_scheduler.name}")
+    logger.info(f"Using learning rate scheduler: {cfg.lr_scheduler}")
+    logger.info(f"Using optimizer: {optimizer}")
+
+    # ----------------------------- Distributed Compute  -----------------------------
+    # We do NOT prepare *training* dataloaders! They are "fake" dataloader!..
+    # ...UNLESS we use a fully ordered dataset!
+    if cfg.dataset.fully_ordered:
+        assert fully_ordered_dataloader is not None, "Fully ordered dataloader should not be None"
+        fully_ordered_dataloader = accelerator.prepare(fully_ordered_dataloader)
+
+    # test dataloaders:
+    for key, dl in test_dataloaders.items():
+        test_dataloaders[key] = accelerator.prepare(dl)  # pyright: ignore[reportArgumentType]
+
+    # net (includes torch.compile):
+    net = accelerator.prepare(net)
+
+    # video time encoding (includes torch.compile):
+    video_time_encoding = accelerator.prepare(video_time_encoding)
+
+    # optimizer:
+    optimizer = accelerator.prepare(optimizer)
+
+    # learning rate scheduler:
+    lr_scheduler = accelerator.prepare(lr_scheduler)
+
+    # ------------------------------------ Dynamic -----------------------------------
+    # dynamic config is never pulled from model save although it is present in the model save folder
+    # => will overwrite the currently saved one (if it exists) at next model save without warning!
+    dyn = DDIMScheduler(**OmegaConf.to_container(cfg.dynamic))  # pyright: ignore[reportCallIssue]
+
+    # ------------------------------ Instantiate Trainer -----------------------------
+    trainer: TimeDiffusion = TimeDiffusion(
+        cfg,
+        dyn,
+        net,
+        net_type,
+        video_time_encoding,
+        accelerator,
+        dataset_params,
+        cfg.debug,
+    )
+
+    # ----------------------------- Resume Training State ----------------------------
+    if (
+        cfg.checkpointing.resume_from_checkpoint is not False
+        and cfg.checkpointing.resume_from_checkpoint != "model_save"
+        and resuming_path is not None  # pyright: ignore[reportPossiblyUnboundVariable]
+    ):
+        trainer.load_checkpoint(resuming_path.as_posix(), logger)  # pyright: ignore[reportPossiblyUnboundVariable]
+
+    # ----------------------------------- Fit data  ----------------------------------
+    trainer.fit(
+        train_dataloaders,
+        test_dataloaders,
+        optimizer,
+        lr_scheduler,
+        logger,
+        best_model_save_folder,
+        last_model_save_folder,
+        saved_artifacts_folder,
+        chckpt_save_path,
+        this_run_folder,
+        resuming_args,
+        fully_ordered_dataloader,
+        fully_ordered_train_ds,
+        fully_ordered_test_ds,
+    )
+
+    # ----------------------------------- The End  -----------------------------------
+    logger.info("Ending training")
+    torch.cuda.empty_cache()
+    accelerator.end_training()
+
+
+if __name__ == "__main__":
+    main()  # pylint: disable = no-value-for-parameter
