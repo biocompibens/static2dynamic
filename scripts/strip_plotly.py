@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 
 def main():
-    repo_root = Path(__file__).parent
+    repo_root = Path(__file__).resolve().parents[1]
     html_files = glob.glob(str(repo_root / "**" / "*.html"), recursive=True)
     html_files = [f for f in html_files if os.path.basename(f) != "index.html"]
 

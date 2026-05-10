@@ -13,7 +13,7 @@ const siteData = {
       size: "large",
       plot: "biotine/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
-        "An in-house time lapse assay of human A549 lung cancer cells treated with biotine and imaged by confocal microscopy at the Curie Institute. Cells are marked with GFP for biotin effect, Rhodamin for membrane, and NucLight for nuclei.",
+        "An in-house time lapse assay of human A549 lung cancer cells treated with biotine and imaged by confocal microscopy at the Curie Institute. Cells are marked with GFP for biotin effect, Rhodamin for membrane, and NucLight for nuclei. The generated videos shown below are collages of individual image patches.",
       comparisons: [
         {
           gt: { src: "biotine/display_vids/ground_truth_01_10s.mp4" },
@@ -30,7 +30,7 @@ const siteData = {
       size: "large",
       plot: "chromalive/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
-        "A time lapse assay from [Lippincott et al. 2025]{lippincott2025}. HeLa cells were exposed to ten staurosporine concentrations from 0 to 156.25 nM, processed with the Live Cell Painting assay (ChromaLIVE), and imaged every 30 minutes for six hours using spinning-disk confocal microscopy.",
+        "A time lapse assay from [Lippincott et al. 2025]{lippincott2025}. HeLa cells were exposed to staurosporine, processed with the Live Cell Painting assay (ChromaLIVE), and imaged every 30 minutes for six hours using spinning-disk confocal microscopy. The generated videos shown below are collages of individual image patches.",
       comparisons: [
         {
           gt: { src: "chromalive/display_vids/ground_truth_01_10s.mp4" },
@@ -48,7 +48,15 @@ const siteData = {
         {
           gt: {
             src: "cell_cycle/gt_vids_display/ground_truth_grid_01.png",
-            labels: ["G1", "S", "G2", "Prophase", "Metaphase", "Anaphase", "Telophase"],
+            labels: [
+              "G1",
+              "S",
+              "G2",
+              "Prophase",
+              "Metaphase",
+              "Anaphase",
+              "Telophase",
+            ],
           },
           gen: {
             src: "cell_cycle/gen_vids/extracted/trajectories_cell_0_0.mp4",
@@ -57,7 +65,15 @@ const siteData = {
         {
           gt: {
             src: "cell_cycle/gt_vids_display/ground_truth_grid_02.png",
-            labels: ["G1", "S", "G2", "Prophase", "Metaphase", "Anaphase", "Telophase"],
+            labels: [
+              "G1",
+              "S",
+              "G2",
+              "Prophase",
+              "Metaphase",
+              "Anaphase",
+              "Telophase",
+            ],
           },
           gen: {
             src: "cell_cycle/gen_vids/extracted/trajectories_cell_1_0.mp4",
@@ -66,23 +82,27 @@ const siteData = {
       ],
     },
     {
-      name: "Nocodazole and Docetaxel on MCF-7",
-      size: "small",
-      plots: [
-        "nocodazole/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
-        "docetaxel/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
-      ],
-      description:
-        "Subsets of the BBBC021 phenotypic profiling dataset from [Caie et al. 2010]{caie2010}, available from the Broad Bioimage Benchmark Collection ([Ljosa et al. 2012]{ljosa2012}). MCF-7 breast cancer cells are treated with compounds at eight concentrations and labeled for DNA, F-actin, and beta-tubulin. We use Nocodazole and Docetaxel independently.",
-      comparisons: [],
-    },
-    {
       name: "Ependymal single-cell",
       size: "small",
       plot: "ependymal/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
         "Images from [Bankole et al. 2025]{bankole2025} on ependymal cells. Mouse lateral ependymal wall tissues were collected across postnatal stages, stained for cell junctions, centrioles, and deuterosomes, projected from 3D stacks to 2D ventricular surface images ([Shihavuddin et al. 2017]{shihavuddin2017}), then segmented into individual cell images.",
-      comparisons: [],
+      comparisons: [
+        {
+          gt: {
+            src: "ependymal/gt_imgs/ground_truth_grid_01.png",
+            labels: ["stem", "halo", "flower", "individualization", "crescent", "ependymal"],
+          },
+          gen: { src: "ependymal/gen_vids/extracted/trajectories_cell_2_2.mp4" },
+        },
+        {
+          gt: {
+            src: "ependymal/gt_imgs/ground_truth_grid_02.png",
+            labels: ["stem", "halo", "flower", "individualization", "crescent", "ependymal"],
+          },
+          gen: { src: "ependymal/gen_vids/extracted/trajectories_cell_2_3.mp4" },
+        },
+      ],
     },
     {
       name: "NASH steatosis",
@@ -113,7 +133,68 @@ const siteData = {
       plot: "retino/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
         "A repurposed Kaggle classification dataset ([Diabetic Retinopathy Detection 2015]{retinopathy2015}) of high-resolution retina fundus images with variable imaging conditions and subtle phenotypic differences. Images are annotated on five diabetic retinopathy scales: no DR, mild, moderate, severe, and proliferative DR.",
-      comparisons: [],
+      comparisons: [
+        {
+          gt: {
+            src: "retino/gt_imgs/ground_truth_grid_01.png",
+            labels: ["0", "1", "2", "3", "4"],
+          },
+          gen: { src: "retino/gen_vids/extracted/trajectories_cell_3_0.mp4" },
+        },
+        {
+          gt: {
+            src: "retino/gt_imgs/ground_truth_grid_02.png",
+            labels: ["0", "1", "2", "3", "4"],
+          },
+          gen: { src: "retino/gen_vids/extracted/trajectories_cell_3_2.mp4" },
+        },
+      ],
+    },
+    {
+      name: "Docetaxel on MCF-7",
+      size: "small",
+      plot: "docetaxel/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
+      description:
+        "A Docetaxel subset of the BBBC021 phenotypic profiling dataset from [Caie et al. 2010]{caie2010}, available from the Broad Bioimage Benchmark Collection ([Ljosa et al. 2012]{ljosa2012}). MCF-7 breast cancer cells are treated across eight concentrations and labeled for DNA, F-actin, and beta-tubulin.",
+      comparisons: [
+        {
+          gt: {
+            src: "docetaxel/gt_imgs/ground_truth_grid_01.png",
+            labels: ["0.0003", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0"],
+          },
+          gen: { src: "docetaxel/gen_vids/extracted/trajectories_cell_1_1.mp4" },
+        },
+        {
+          gt: {
+            src: "docetaxel/gt_imgs/ground_truth_grid_02.png",
+            labels: ["0.0003", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0"],
+          },
+          gen: { src: "docetaxel/gen_vids/extracted/trajectories_cell_0_0.mp4" },
+        },
+      ],
+    },
+    {
+      name: "Nocodazole on MCF-7",
+      size: "small",
+      plot: "nocodazole/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
+      description:
+        "A Nocodazole subset of the BBBC021 phenotypic profiling dataset from [Caie et al. 2010]{caie2010}, available from the Broad Bioimage Benchmark Collection ([Ljosa et al. 2012]{ljosa2012}). MCF-7 breast cancer cells are treated across eight concentrations and labeled for DNA, F-actin, and beta-tubulin.",
+      comparisons: [
+        {
+          gt: {
+            src: "nocodazole/gt_imgs/ground_truth_grid_01.png",
+            labels: ["DMSO", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0", "3.0"],
+          },
+          gen: { src: "nocodazole/gen_vids/extracted/trajectories_cell_0_3.mp4" },
+        },
+        {
+          gt: {
+            src: "nocodazole/gt_imgs/ground_truth_grid_02.png",
+            labels: ["DMSO", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0", "3.0"],
+          },
+          gen: { src: "nocodazole/gen_vids/extracted/trajectories_cell_0_1.mp4" },
+        },
+      ],
     },
   ],
 };
@@ -144,19 +225,20 @@ const escapeHtml = (value = "") =>
 const citations = window.siteCitations || {};
 
 const richText = (value = "") =>
-  escapeHtml(value).replace(
-    /\[([^\]]+)\]\{([a-zA-Z0-9_-]+)\}/g,
-    (match, label, id) => {
+  escapeHtml(value)
+    .replace(/\[([^\]]+)\]\{([a-zA-Z0-9_-]+)\}/g, (match, label, id) => {
       const citation = citations[id];
       if (!citation?.url) {
         return label;
       }
       return `<a class="citation-link" href="${encodeURI(citation.url)}" target="_blank" rel="noreferrer">${escapeHtml(citation.label || label)}</a>`;
-    },
-  ).replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    })
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
 
 const renderIntroParagraph = (paragraph) => {
-  const stages = paragraph.match(/^(.*?:)\s*1\.\s*(.*?)\s*2\.\s*(.*?)\s*3\.\s*(.*)$/);
+  const stages = paragraph.match(
+    /^(.*?:)\s*1\.\s*(.*?)\s*2\.\s*(.*?)\s*3\.\s*(.*)$/,
+  );
   if (!stages) {
     return `<p>${richText(paragraph)}</p>`;
   }
@@ -217,12 +299,11 @@ const mediaCard = (item, label, datasetSize = "small") => {
         ${labels.map((seriesLabel) => `<span>${escapeHtml(seriesLabel)}</span>`).join("")}
       </div>`
     : "";
-  const media =
-    isImage
-      ? `<button class="image-zoom-trigger" type="button" data-zoom-src="${source}"${zoomTitle}${zoomLabels} aria-label="Zoom ${escapeHtml(label)}">
+  const media = isImage
+    ? `<button class="image-zoom-trigger" type="button" data-zoom-src="${source}"${zoomTitle}${zoomLabels} aria-label="Zoom ${escapeHtml(label)}">
            <img src="${source}" alt="${escapeHtml(label)}" loading="lazy">
          </button>`
-      : `<video controls autoplay playsinline muted preload="auto" data-sync-video>
+    : `<video controls autoplay playsinline muted preload="auto" data-sync-video>
            <source src="${source}">
            Your browser does not support the video tag.
          </video>
@@ -274,7 +355,8 @@ const normalizeComparisons = (dataset) => {
 const comparisonRow = (comparison, datasetSize) => {
   const gt = comparison.gt;
   const gen = comparison.gen;
-  const gtLabel = gt && mediaKind(gt) === "video" ? "Ground truth" : "Ground truths";
+  const gtLabel =
+    gt && mediaKind(gt) === "video" ? "Ground truth" : "Ground truths";
   return `
     <article class="comparison-row">
       <div class="comparison-media">
@@ -282,6 +364,43 @@ const comparisonRow = (comparison, datasetSize) => {
         ${gen ? mediaCard(gen, "Generated", datasetSize) : `<div class="empty-note">No generated sample.</div>`}
       </div>
     </article>
+  `;
+};
+
+const comparisonList = (comparisons, size) => `
+  <div class="comparison-list">
+    ${
+      comparisons.length
+        ? comparisons
+            .map((comparison) => comparisonRow(comparison, size))
+            .join("")
+        : `<div class="empty-note">No media added yet.</div>`
+    }
+  </div>
+`;
+
+const datasetBlocks = (dataset, size) => {
+  if (!Array.isArray(dataset.subsections) || dataset.subsections.length === 0) {
+    return `
+      ${plotEmbeds(dataset)}
+      ${comparisonList(normalizeComparisons(dataset), size)}
+    `;
+  }
+
+  return `
+    <div class="dataset-subsections">
+      ${dataset.subsections
+        .map(
+          (subsection) => `
+        <section class="dataset-subsection">
+          <h3>${escapeHtml(subsection.title || "")}</h3>
+          ${plotEmbeds(subsection)}
+          ${comparisonList(normalizeComparisons(subsection), size)}
+        </section>
+      `,
+        )
+        .join("")}
+    </div>
   `;
 };
 
@@ -296,9 +415,7 @@ const datasets = Array.isArray(siteData.datasets) ? siteData.datasets : [];
 document.querySelector("#site-title").textContent = siteData.title;
 document.querySelector("#site-subtitle").textContent = siteData.subtitle;
 
-introTarget.innerHTML = introParagraphs
-  .map(renderIntroParagraph)
-  .join("");
+introTarget.innerHTML = introParagraphs.map(renderIntroParagraph).join("");
 
 datasetNavTarget.hidden = datasets.length < 2;
 datasetNavTarget.innerHTML = datasets
@@ -318,7 +435,6 @@ datasetTarget.innerHTML = datasets.length
   ? datasets
       .map((dataset, index) => {
         const name = dataset.name || `Dataset ${index + 1}`;
-        const comparisons = normalizeComparisons(dataset);
         const size = dataset.size === "large" ? "large" : "small";
         return `
           <section class="dataset dataset-${size}" id="${slugify(name)}">
@@ -330,14 +446,7 @@ datasetTarget.innerHTML = datasets.length
                   : ""
               }
             </div>
-            ${plotEmbeds(dataset)}
-            <div class="comparison-list">
-              ${
-                comparisons.length
-                  ? comparisons.map((comparison) => comparisonRow(comparison, size)).join("")
-                  : `<div class="empty-note">No media added yet.</div>`
-              }
-            </div>
+            ${datasetBlocks(dataset, size)}
           </section>
         `;
       })
