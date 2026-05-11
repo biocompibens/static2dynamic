@@ -66,7 +66,10 @@ from GaussianProxy.conf.training_conf import (
 from GaussianProxy.utils.data import (
     BaseContinuousTimeDataset,
     BaseDataset,
+    ContinuousTimeImageDataset,
+    ContinuousTimeImageDataset1D,
     ImageDataset,
+    ImageDataset1Dto3D,
     remove_flips_and_rotations_from_transforms,
 )
 from GaussianProxy.utils.misc import (
@@ -192,7 +195,7 @@ def main(cfg: InferenceConfig, logger: MultiProcessAdapter, config_snapshot: str
 
     # denoiser
     net: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(  # pyright: ignore[reportAssignmentType]
-        run_path / cfg.saved_model_foldername / "net"
+        run_path / cfg.saved_model_foldername / "net", local_files_only=True
     )
     nb_params_M = round(net.num_parameters() / 1e6)
     logger.info(f"Loaded denoiser from {cfg.saved_model_foldername}/net with ~{nb_params_M}M parameters")
@@ -203,7 +206,7 @@ def main(cfg: InferenceConfig, logger: MultiProcessAdapter, config_snapshot: str
 
     # time encoder
     video_time_encoder: VideoTimeEncoding = VideoTimeEncoding.from_pretrained(  # pyright: ignore[reportAssignmentType]
-        run_path / cfg.saved_model_foldername / "video_time_encoder"
+        run_path / cfg.saved_model_foldername / "video_time_encoder", local_files_only=True
     )
     nb_params_K = round(video_time_encoder.num_parameters() / 1e3)
     logger.info(
@@ -213,7 +216,9 @@ def main(cfg: InferenceConfig, logger: MultiProcessAdapter, config_snapshot: str
     video_time_encoder.to(device, cfg.dtype)  # pyright: ignore[reportArgumentType]
 
     # dynamic
-    orig_dynamic: DDIMScheduler = DDIMScheduler.from_pretrained(run_path / cfg.saved_model_foldername / "dynamic")
+    orig_dynamic: DDIMScheduler = DDIMScheduler.from_pretrained(
+        run_path / cfg.saved_model_foldername / "dynamic", local_files_only=True
+    )
     logger.debug(f"Loaded original dynamic from {run_path / cfg.saved_model_foldername / 'dynamic'}:\n{orig_dynamic}")
 
     dynamic_type = DDIMScheduler
@@ -225,7 +230,7 @@ def main(cfg: InferenceConfig, logger: MultiProcessAdapter, config_snapshot: str
 
     if cfg.scheduler_config_path is not None:
         logger.info(f"Loading scheduler config from {cfg.scheduler_config_path}")
-        dynamic = dynamic_type.from_pretrained(cfg.scheduler_config_path)  # pyright: ignore[reportAssignmentType]
+        dynamic = dynamic_type.from_pretrained(cfg.scheduler_config_path, local_files_only=True)  # pyright: ignore[reportAssignmentType]
     elif cfg.import_orig_config:
         logger.info("Loading scheduler config from the original dynamic")
         dynamic = dynamic_type.from_config(orig_dynamic.config)  # pyright: ignore[reportAssignmentType, reportAttributeAccessIssue]
@@ -1998,7 +2003,7 @@ def metrics_computation(
         train_split_path = cfg.output_dir.parent / "train_samples.parquet"
         test_split_path = cfg.output_dir.parent / "test_samples.parquet"
         required_cols = {"true_label", "time"}
-        if train_split_path.exists() and test_split_path.exists():
+        if not eval_strat.load_times_from_base_parquet_file and train_split_path.exists() and test_split_path.exists():
             logger.info(
                 f"Found split parquet files at {train_split_path} and {test_split_path}, loading them to get continuous video times for metrics computation"
             )
@@ -2009,7 +2014,9 @@ def metrics_computation(
             )
             all_files = pd.concat([train_df, test_df], ignore_index=True)
         else:
-            logger.debug(f"Split parquet files not found at {train_split_path} and {test_split_path}")
+            logger.debug(
+                f"eval_strat.load_times_from_base_parquet_file is False or split parquet files not found at {train_split_path} and {test_split_path}"
+            )
             logger.info(
                 f"Loading continuous video times for metrics computation from base parquet file at {cfg.dataset.path_to_single_parquet}"
             )
@@ -2055,10 +2062,19 @@ def metrics_computation(
 
     # get true datasets to compare against (in [0; 255] uint8 PNG images)
     assert cfg.dataset.dataset_params is not None
+    if cfg.dataset.dataset_params.dataset_class is ContinuousTimeImageDataset:
+        discrete_ds_class = ImageDataset
+    elif cfg.dataset.dataset_params.dataset_class is ContinuousTimeImageDataset1D:
+        discrete_ds_class = ImageDataset1Dto3D
+    else:
+        raise ValueError(
+            f"Unsupported dataset_params type {type(cfg.dataset.dataset_params)}; expected ContinuousTimeImageDataset or ContinuousTimeImageDataset1D"
+        )
+
     true_datasets_to_compare_with = get_true_datasets_for_metrics_computation(
         eval_strat,
         eval_video_times,
-        ImageDataset,  # TODO: hard-coded... cf the usual dataset config mess
+        discrete_ds_class,
         cfg.dataset.dataset_params.file_extension,
         cfg.dataset.transforms,
         cfg,
@@ -2397,7 +2413,7 @@ def _generate_images_for_metrics_computation(
             # convert to f32 to avoid overflows
             image = image.to(torch.float32)
 
-            # save to [0; 255] uint8 PNG images
+            # save to [0; 255] uint8 PNG RGB images
             save_images_for_metrics_compute(
                 image,
                 gen_dir,
@@ -2956,11 +2972,11 @@ def get_true_datasets_for_metrics_computation(
         ):
             if "half" in eval_strat.nb_samples_to_gen_per_time:
                 assert training_was_with_unpaired_data or len(dataset) % (base_aug_factor / 2) == 0, (
-                    f"Expected number of samples to be a multiple of {base_aug_factor / 2} when using paired data and 'half', got {len(dataset)} at {dataset.base_path}"
+                    f"Expected number of samples to be a multiple of {base_aug_factor / 2} when using paired data and 'half', got {len(dataset)} for time {time_name} at {dataset.base_path}"
                 )
             elif not (training_was_with_unpaired_data or len(dataset) % base_aug_factor == 0):
                 logger.error(
-                    f"Expected number of samples to be a multiple of {base_aug_factor} when using paired data and no 'half', got {len(dataset)} at {dataset.base_path}"
+                    f"Expected number of samples to be a multiple of {base_aug_factor} when using paired data and no 'half', got {len(dataset)} for time {time_name} at {dataset.base_path}"
                 )
         logger.debug(
             f"True dataset to compare with for metrics computation for time {time_name} has {len(dataset)} samples at {dataset.base_path}"

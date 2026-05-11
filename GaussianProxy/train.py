@@ -1,4 +1,4 @@
-# Copyright 2024-2025 Thomas Boyer
+# Copyright 2024 Thomas Boyer
 
 import logging
 from datetime import timedelta

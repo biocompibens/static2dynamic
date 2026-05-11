@@ -325,6 +325,7 @@ class MetricsComputation(EvaluationStrategy):
     metrics_comparison_mode: str = "gen_vs_true_same_time"
     max_nb_reference_samples: int | None = None
     feature_extractor: str = "inception-v3-compat"
+    load_times_from_base_parquet_file: bool = False
 
     def __post_init__(self):
         valid_modes = {

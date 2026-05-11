@@ -514,7 +514,7 @@ def save_images_for_metrics_compute(
     process_idx: int | None = None,
 ):
     """
-    Saves [-1;1] tensors to [0; 255] uint8 3 channels images in the given folder.
+    Saves [-1;1] tensors to [0; 255] uint8 3-channels images in the given folder.
 
     TODO(if bottleneck): make this non-blocking and check all results at once
     at very end of all generations in main `_metrics_computation` func.
