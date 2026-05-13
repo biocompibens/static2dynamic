@@ -11,9 +11,11 @@ const siteData = {
     {
       name: "Biotine",
       size: "large",
+      patchGrid: { rows: 8, cols: 8 },
+      mediaNote: "Light grid lines mark the patch boundaries used for generation.",
       plot: "biotine/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
-        "An in-house time lapse assay of human A549 lung cancer cells treated with biotine and imaged by confocal microscopy at the Curie Institute. Cells are marked with GFP for biotin effect, Rhodamin for membrane, and NucLight for nuclei. The generated videos shown below are collages of individual image patches.",
+        "An in-house time lapse assay of human A549 lung cancer cells treated with biotine and imaged by confocal microscopy at the Curie Institute. Cells are marked with GFP for biotin effect, Rhodamin for membrane, and NucLight for nuclei. The videos shown below are collages of individual image patches.",
       comparisons: [
         {
           gt: { src: "biotine/display_vids/ground_truth_01_10s.mp4" },
@@ -28,13 +30,19 @@ const siteData = {
     {
       name: "ChromaLive",
       size: "large",
+      patchGrid: { rows: 5, cols: 5 },
+      mediaNote: "Light grid lines mark the patch boundaries used for generation.",
       plot: "chromalive/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
-        "A time lapse assay from [Lippincott et al. 2025]{lippincott2025}. HeLa cells were exposed to staurosporine, processed with the Live Cell Painting assay (ChromaLIVE), and imaged every 30 minutes for six hours using spinning-disk confocal microscopy. The generated videos shown below are collages of individual image patches.",
+        "A time lapse assay from [Lippincott et al. 2025]{lippincott2025}. HeLa cells were exposed to staurosporine, processed with the Live Cell Painting assay (ChromaLIVE), and imaged every 30 minutes for six hours using spinning-disk confocal microscopy. The videos shown below are collages of individual image patches.",
       comparisons: [
         {
           gt: { src: "chromalive/display_vids/ground_truth_01_10s.mp4" },
           gen: { src: "chromalive/display_vids/generated_01_10s.mp4" },
+        },
+        {
+          gt: { src: "chromalive/display_vids/ground_truth_02_10s.mp4" },
+          gen: { src: "chromalive/display_vids/generated_02_10s.mp4" },
         },
       ],
     },
@@ -284,11 +292,37 @@ const mediaKind = (item) => {
   return "video";
 };
 
-const mediaCard = (item, label, datasetSize = "small") => {
+const gridLines = (cols, rows) => {
+  const vertical = Array.from({ length: Math.max(cols - 1, 0) }, (_, index) => {
+    const x = index + 1;
+    return `<line x1="${x}" y1="0" x2="${x}" y2="${rows}"></line>`;
+  }).join("");
+  const horizontal = Array.from({ length: Math.max(rows - 1, 0) }, (_, index) => {
+    const y = index + 1;
+    return `<line x1="0" y1="${y}" x2="${cols}" y2="${y}"></line>`;
+  }).join("");
+  return `<rect x="0" y="0" width="${cols}" height="${rows}"></rect>${vertical}${horizontal}`;
+};
+
+const patchGridSvg = (grid, extraClass = "") => {
+  const cols = Number(grid?.cols);
+  const rows = Number(grid?.rows);
+  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1) {
+    return "";
+  }
+  return `<svg class="patch-grid${extraClass}" viewBox="0 0 ${cols} ${rows}" preserveAspectRatio="none" aria-hidden="true">${gridLines(cols, rows)}</svg>`;
+};
+
+const mediaCard = (item, label, datasetSize = "small", patchGrid = null) => {
   const source = encodeURI(item.src);
   const kind = mediaKind(item);
   const isImage = kind === "image";
   const isLargeDataset = datasetSize === "large";
+  const grid = !isImage && patchGrid ? patchGrid : null;
+  const gridData = grid
+    ? ` data-grid-cols="${grid.cols}" data-grid-rows="${grid.rows}"`
+    : "";
+  const gridOverlay = grid ? patchGridSvg(grid) : "";
   const labels = Array.isArray(item.labels) ? item.labels : [];
   const zoomLabels = labels.length
     ? ` data-zoom-labels="${escapeHtml(JSON.stringify(labels))}"`
@@ -303,11 +337,14 @@ const mediaCard = (item, label, datasetSize = "small") => {
     ? `<button class="image-zoom-trigger" type="button" data-zoom-src="${source}"${zoomTitle}${zoomLabels} aria-label="Zoom ${escapeHtml(label)}">
            <img src="${source}" alt="${escapeHtml(label)}" loading="lazy">
          </button>`
-    : `<video controls autoplay playsinline muted preload="auto" data-sync-video>
-           <source src="${source}">
-           Your browser does not support the video tag.
-         </video>
-         <button class="video-zoom-trigger" type="button" data-zoom-src="${source}"${zoomTitle} data-zoom-size="${isLargeDataset ? "large" : "small"}" aria-label="Zoom ${escapeHtml(label)}">Zoom</button>`;
+    : `<span class="video-frame${grid ? " video-frame-grid" : ""}">
+           <video controls autoplay playsinline muted preload="auto" data-sync-video>
+             <source src="${source}">
+             Your browser does not support the video tag.
+           </video>
+           ${gridOverlay}
+         </span>
+         <button class="video-zoom-trigger" type="button" data-zoom-src="${source}"${zoomTitle}${gridData} data-zoom-size="${isLargeDataset ? "large" : "small"}" aria-label="Zoom ${escapeHtml(label)}">Zoom</button>`;
 
   return `
     <article class="media-card ${isImage ? "media-card-image" : "media-card-video"}">
@@ -352,7 +389,7 @@ const normalizeComparisons = (dataset) => {
   }));
 };
 
-const comparisonRow = (comparison, datasetSize) => {
+const comparisonRow = (comparison, datasetSize, patchGrid = null) => {
   const gt = comparison.gt;
   const gen = comparison.gen;
   const gtLabel =
@@ -360,19 +397,22 @@ const comparisonRow = (comparison, datasetSize) => {
   return `
     <article class="comparison-row">
       <div class="comparison-media">
-        ${gt ? mediaCard(gt, gtLabel, datasetSize) : `<div class="empty-note">No ground truth sample.</div>`}
-        ${gen ? mediaCard(gen, "Generated", datasetSize) : `<div class="empty-note">No generated sample.</div>`}
+        ${gt ? mediaCard(gt, gtLabel, datasetSize, patchGrid) : `<div class="empty-note">No ground truth sample.</div>`}
+        ${gen ? mediaCard(gen, "Generated", datasetSize, patchGrid) : `<div class="empty-note">No generated sample.</div>`}
       </div>
     </article>
   `;
 };
 
-const comparisonList = (comparisons, size) => `
+const mediaNote = (text) =>
+  text ? `<p class="media-note">${richText(text)}</p>` : "";
+
+const comparisonList = (comparisons, size, patchGrid = null) => `
   <div class="comparison-list">
     ${
       comparisons.length
         ? comparisons
-            .map((comparison) => comparisonRow(comparison, size))
+            .map((comparison) => comparisonRow(comparison, size, patchGrid))
             .join("")
         : `<div class="empty-note">No media added yet.</div>`
     }
@@ -383,7 +423,8 @@ const datasetBlocks = (dataset, size) => {
   if (!Array.isArray(dataset.subsections) || dataset.subsections.length === 0) {
     return `
       ${plotEmbeds(dataset)}
-      ${comparisonList(normalizeComparisons(dataset), size)}
+      ${mediaNote(dataset.mediaNote)}
+      ${comparisonList(normalizeComparisons(dataset), size, dataset.patchGrid)}
     `;
   }
 
@@ -395,7 +436,8 @@ const datasetBlocks = (dataset, size) => {
         <section class="dataset-subsection">
           <h3>${escapeHtml(subsection.title || "")}</h3>
           ${plotEmbeds(subsection)}
-          ${comparisonList(normalizeComparisons(subsection), size)}
+          ${mediaNote(subsection.mediaNote)}
+          ${comparisonList(normalizeComparisons(subsection), size, subsection.patchGrid || dataset.patchGrid)}
         </section>
       `,
         )
@@ -507,13 +549,18 @@ zoomDialog.innerHTML = `
   <button class="image-zoom-close" type="button" aria-label="Close zoom">Close</button>
   <p class="media-label zoom-title"></p>
   <img alt="">
-  <video controls playsinline></video>
+  <div class="zoom-video-frame" hidden>
+    <video controls playsinline></video>
+    <svg class="patch-grid zoom-patch-grid" preserveAspectRatio="none" aria-hidden="true" hidden></svg>
+  </div>
   <div class="series-labels zoom-series-labels"></div>
 `;
 document.body.append(zoomDialog);
 
 const zoomImage = zoomDialog.querySelector("img");
+const zoomVideoFrame = zoomDialog.querySelector(".zoom-video-frame");
 const zoomVideo = zoomDialog.querySelector("video");
+const zoomPatchGrid = zoomDialog.querySelector(".zoom-patch-grid");
 const zoomTitle = zoomDialog.querySelector(".zoom-title");
 const zoomLabels = zoomDialog.querySelector(".zoom-series-labels");
 const resetZoomDialog = () => {
@@ -522,10 +569,13 @@ const resetZoomDialog = () => {
   zoomImage.hidden = true;
   zoomImage.removeAttribute("src");
   zoomImage.alt = "";
-  zoomVideo.hidden = true;
+  zoomVideoFrame.hidden = true;
   zoomVideo.pause();
   zoomVideo.removeAttribute("src");
   zoomVideo.load();
+  zoomPatchGrid.hidden = true;
+  zoomPatchGrid.removeAttribute("viewBox");
+  zoomPatchGrid.innerHTML = "";
   zoomLabels.hidden = true;
   zoomLabels.innerHTML = "";
 };
@@ -554,7 +604,14 @@ document.querySelectorAll(".video-zoom-trigger").forEach((trigger) => {
     zoomTitle.textContent = trigger.dataset.zoomTitle || "";
     zoomVideo.src = trigger.dataset.zoomSrc;
     zoomVideo.currentTime = 0;
-    zoomVideo.hidden = false;
+    zoomVideoFrame.hidden = false;
+    if (trigger.dataset.gridCols && trigger.dataset.gridRows) {
+      const cols = Number(trigger.dataset.gridCols);
+      const rows = Number(trigger.dataset.gridRows);
+      zoomPatchGrid.setAttribute("viewBox", `0 0 ${cols} ${rows}`);
+      zoomPatchGrid.innerHTML = gridLines(cols, rows);
+      zoomPatchGrid.hidden = false;
+    }
     zoomDialog.showModal();
     zoomVideo.play().catch(() => {});
   });
