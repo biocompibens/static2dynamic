@@ -323,6 +323,15 @@ const mediaCard = (item, label, datasetSize = "small", patchGrid = null) => {
     ? ` data-grid-cols="${grid.cols}" data-grid-rows="${grid.rows}"`
     : "";
   const gridOverlay = grid ? patchGridSvg(grid) : "";
+  const showVideoState = !isImage && label === "Generated";
+  const videoStateToggle = showVideoState
+    ? `<button class="video-state-toggle" type="button" data-video-state="paused" aria-label="Play generated video">
+         <span class="video-state-icon" aria-hidden="true">
+           <span class="video-state-play"></span>
+           <span class="video-state-pause"></span>
+         </span>
+       </button>`
+    : "";
   const labels = Array.isArray(item.labels) ? item.labels : [];
   const zoomLabels = labels.length
     ? ` data-zoom-labels="${escapeHtml(JSON.stringify(labels))}"`
@@ -338,7 +347,7 @@ const mediaCard = (item, label, datasetSize = "small", patchGrid = null) => {
            <img src="${source}" alt="${escapeHtml(label)}" loading="lazy">
          </button>`
     : `<span class="video-frame${grid ? " video-frame-grid" : ""}">
-           <video controls autoplay playsinline muted preload="auto" data-sync-video>
+           <video controls playsinline muted preload="none" data-sync-video data-viewport-autoplay>
              <source src="${source}">
              Your browser does not support the video tag.
            </video>
@@ -348,7 +357,10 @@ const mediaCard = (item, label, datasetSize = "small", patchGrid = null) => {
 
   return `
     <article class="media-card ${isImage ? "media-card-image" : "media-card-video"}">
-      <p class="media-label">${escapeHtml(label)}</p>
+      <div class="media-label-row">
+        <p class="media-label">${escapeHtml(label)}</p>
+        ${videoStateToggle}
+      </div>
       <div class="media-shell">${media}</div>
       ${labelTicks}
     </article>
@@ -495,6 +507,26 @@ datasetTarget.innerHTML = datasets.length
       .join("")
   : `<div class="empty-note">Add dataset entries in <code>main.js</code> to populate the page.</div>`;
 
+const prepareVideo = (video) => {
+  if (video.dataset.videoReady === "true") {
+    return;
+  }
+  video.preload = "auto";
+  video.load();
+  video.dataset.videoReady = "true";
+};
+
+const playVideo = (video, options = {}) => {
+  if (video.ended) {
+    if (!options.restartEnded) {
+      return;
+    }
+    video.currentTime = 0;
+  }
+  prepareVideo(video);
+  video.play().catch(() => {});
+};
+
 const syncVideoGroup = (row) => {
   const videos = [...row.querySelectorAll("video[data-sync-video]")];
   if (videos.length < 2) {
@@ -522,7 +554,7 @@ const syncVideoGroup = (row) => {
     video.addEventListener("play", () => {
       videos.forEach((other) => {
         if (other !== video && other.paused) {
-          other.play().catch(() => {});
+          playVideo(other);
         }
       });
     });
@@ -542,6 +574,85 @@ const syncVideoGroup = (row) => {
 };
 
 document.querySelectorAll(".comparison-row").forEach(syncVideoGroup);
+
+const setupVideoStateControls = () => {
+  document.querySelectorAll(".video-state-toggle").forEach((toggle) => {
+    const video = toggle.closest(".media-card")?.querySelector("video[data-sync-video]");
+    if (!video) {
+      return;
+    }
+
+    const update = () => {
+      const isPlaying = !video.paused && !video.ended;
+      toggle.dataset.videoState = isPlaying ? "playing" : "paused";
+      toggle.setAttribute(
+        "aria-label",
+        isPlaying ? "Pause generated video" : "Play generated video",
+      );
+    };
+
+    toggle.addEventListener("click", () => {
+      if (video.paused || video.ended) {
+        if (video.ended) {
+          video
+            .closest(".comparison-row")
+            ?.querySelectorAll("video[data-sync-video]")
+            .forEach((rowVideo) => {
+              rowVideo.currentTime = 0;
+            });
+        }
+        playVideo(video, { restartEnded: true });
+      } else {
+        video.pause();
+      }
+    });
+    video.addEventListener("play", update);
+    video.addEventListener("pause", update);
+    video.addEventListener("ended", update);
+    update();
+  });
+};
+
+const setupViewportAutoplay = () => {
+  const rows = [...document.querySelectorAll(".comparison-row")];
+  const playRow = (row) => {
+    row.querySelectorAll("video[data-viewport-autoplay]").forEach(playVideo);
+  };
+  const pauseRow = (row) => {
+    row.querySelectorAll("video[data-viewport-autoplay]").forEach((video) => {
+      if (!video.paused) {
+        video.pause();
+      }
+    });
+  };
+
+  if (!("IntersectionObserver" in window)) {
+    rows.slice(0, 1).forEach(playRow);
+    return;
+  }
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          playRow(entry.target);
+        } else {
+          pauseRow(entry.target);
+        }
+      });
+    },
+    {
+      root: null,
+      rootMargin: "120px 0px",
+      threshold: 0.15,
+    },
+  );
+
+  rows.forEach((row) => observer.observe(row));
+};
+
+setupVideoStateControls();
+setupViewportAutoplay();
 
 const zoomDialog = document.createElement("dialog");
 zoomDialog.className = "image-zoom-dialog";
