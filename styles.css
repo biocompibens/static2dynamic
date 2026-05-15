@@ -384,9 +384,9 @@ a {
 .patch-grid rect,
 .patch-grid line {
   fill: none;
-  stroke: rgba(230, 232, 226, 0.32);
-  stroke-width: 1;
-  stroke-dasharray: 0.1 4;
+  stroke: rgba(246, 248, 242, 0.4);
+  stroke-width: 1px;
+  stroke-dasharray: 1px 6px;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
@@ -548,6 +548,11 @@ a {
   text-align: center;
 }
 
+.series-labels span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .dataset-large .media-shell img,
 .dataset-large .media-shell video {
   max-height: 42rem;
@@ -666,6 +671,23 @@ a {
   font-size: 0.85rem;
 }
 
+@media (max-width: 960px) {
+  .comparison-media:has(.media-card-image) {
+    grid-template-columns: 1fr;
+    max-width: min(100%, 720px);
+    margin-inline: auto;
+  }
+
+  .comparison-media:has(.media-card-image) .media-card-video {
+    max-width: min(100%, 330px);
+  }
+
+  .series-labels {
+    gap: 0.2rem;
+    font-size: 0.62rem;
+  }
+}
+
 @media (max-width: 720px) {
   .page-shell {
     width: min(100% - 1rem, 1120px);
@@ -686,6 +708,11 @@ a {
   }
 
   .comparison-media {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+
+  .comparison-media:has(.media-card-image) {
     grid-template-columns: 1fr;
     max-width: none;
   }
