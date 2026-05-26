@@ -9,7 +9,6 @@ __pycache__
 
 ############# Venv
 .env
-.envrc
 
 ############# Figures
 *.html

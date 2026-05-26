@@ -26,9 +26,9 @@
 
 ## Installation
 
-Static2Dynamic runs on Linux (tested on Ubuntu 20.04.1) and is installed with [`uv`](https://docs.astral.sh/uv).  
+Static2Dynamic runs on Linux (tested on Ubuntu 20.04.1) and is installed with [`uv`](https://docs.astral.sh/uv).
 
-It will automatically use Python `3.13` (`uv` will prompt to install if, it is not already).
+It will automatically use Python `3.13` (`uv` will install if it is not already).
 
 Install the environment with:
 
@@ -94,7 +94,7 @@ The launcher script takes care of copying the user config to the experiment fold
 
 The third stage (video inference) is performed with the `GaussianProxy/inference.py` script.
 
-It can of course be performed on any already trained model; they can be downloaded from [huggingface.co/thethomasboyer/Static2Dynamic]([huggingface.co/thethomasboyer/Static2Dynamic](https://huggingface.co/thethomasboyer/Static2Dynamic)), together with the pseudotime predictions.
+It can of course be performed on any already trained model; they can be downloaded from [huggingface.co/thethomasboyer/Static2Dynamic]([huggingface.co/thethomasboyer/Static2Dynamic](https://huggingface.co/thethomasboyer/Static2Dynamic)), together with the pseudotime predictions. If reusing precomputed pseudotimes predictions, make sure to update the paths saved in the `.parquet` files to match the actual paths on your machine. A script is provided at `scripts/change_dataset_prefix_in_parquet_file.py` to do this.
 
 First, a user config must be created. Such a config is a `GaussianProxy.conf.inference_conf.InferenceConfig` *object* and must be defined in a python file located at `my_conf/my_inference_conf.py` and named `inference_conf`.
 
@@ -102,7 +102,7 @@ An example can be found in `example_user_conf/my_inference_conf.py`.
 
 The key things to change are typically:
 
-- the dataset path (replace `from my_conf.dataset.dataset_conf import dataset` with the actual dataset config).
+- the dataset path (replace `from my_conf.dataset.dataset_conf import dataset` with the actual dataset config to use)
 - the path to the saved model repo (`root_experiments_path/project_name/folder_name`, all of them needing to be set)
 - The GPU `device`
 
@@ -118,10 +118,20 @@ A Static2Dynamic generation corresponds to the `InvertedRegeneration` evaluation
 
 Here, as an example, we provide detailed instructions to quickly perform inference on the NASH steatosis dataset using the pretrained model, once the environment [Installation](#installation) is complete.
 
+If the `.envrc` file is not automatically loaded by `direnv`, run it manually to activate the environment and set the `PYTHONPATH` properly.
+
 ### Download the data
 
-Download the steatosis data ([Heinemann et al., 2019](https://rdcu.be/fkCxH)) from [osf.io/p48rd](https://osf.io/p48rd) and extract it.  
-Static2Dynamic is a data-to-data method and thus needs a starting datapoint to perform inference. It will use the test split if configured to do so (the default).
+Download the steatosis data ([Heinemann et al., 2019](https://rdcu.be/fkCxH)) from [osf.io/p48rd](https://osf.io/p48rd) and extract it.
+
+Static2Dynamic is a data-to-data method and thus needs a starting datapoint to perform inference. It will use its own test split if configured to do so (the default). For the steatosis dataset specifically, merge the original splits:
+
+```sh
+for d in steatosis/val/*; do
+  cls="$(basename "$d")"
+  mv "$d"/* "steatosis/training/$cls"/
+done
+```
 
 ### Download the model and pseudotime predictions for the dataset
 
@@ -132,6 +142,24 @@ hf download thethomasboyer/Static2Dynamic --include 'NASH_steato/*' --local-dir 
 ```
 
 This will create a `Static2Dynamic_models/NASH_steato` folder containing the trained model and the pseudotime predictions for the dataset.
+
+Then update the file paths saved in `.Static2Dynamic_models/NASH_steato/pseudotime_predictions/NASH_steatosis__continuous_time_predictions__facebook_dinov2-with-registers-giant_dataset_preproc.parquet` with the `scripts/change_dataset_prefix_in_parquet_file.py` script to match the actual paths on your machine. Example if you extracted the data under `./steatosis/`:
+
+```sh
+python scripts/change_dataset_prefix_in_parquet_file.py \
+--dataset_files_list Static2Dynamic_models/NASH_steato/pseudotime_predictions/NASH_steatosis__continuous_time_predictions__facebook_dinov2-with-registers-giant_dataset_preproc.parquet \
+--previous_dataset_prefix /projects/static2dynamic/datasets/NASH/prepared_data/steatosis \
+--new_dataset_prefix ./steatosis/training
+```
+
+Do the same for the train/test splits files:
+
+```sh
+python scripts/change_dataset_prefix_in_parquet_file.py \
+--dataset_files_list Static2Dynamic_models/NASH_steato/{train,test}_samples.parquet \
+--previous_dataset_prefix /projects/static2dynamic/datasets/NASH/prepared_data/steatosis \
+--new_dataset_prefix ./steatosis/training
+```
 
 ### Instantiate a user config for inference
 
@@ -153,9 +181,10 @@ dataset = replace(
     dataset,
     path = "/path/to/the/extracted/NASH_steatosis/data",
     path_to_single_parquet = "./Static2Dynamic_models/NASH_steato/pseudotime_predictions/NASH_steatosis__continuous_time_predictions__facebook_dinov2-with-registers-giant_dataset_preproc.parquet"
+)
 ```
 
-Replace "/path/to/the/extracted/NASH_steatosis/data" with the actual path to the extracted data.
+Replace "`/path/to/the/extracted/NASH_steatosis/data`" with the actual path to the extracted data.
 
 Then replace the line "`from my_conf.dataset.dataset_conf import dataset`" in `my_conf/my_inference_conf.py` with this dataset config: `from my_conf.dataset.NASH_steato import dataset`.
 
