@@ -6,13 +6,15 @@ const siteData = {
   intro: [
     "Static2Dynamic reconstructs unseen continuous dynamics from time-unpaired static images. It achieves this in 3 stages: 1. estimate a continuous pseudotime for each image 2. learn a pseudotime-conditioned image diffusion model 3. generate temporally coherent videos initialized from real samples",
     "We validate our method on experimental microscopy *video* datasets where ground truths are available, then apply Static2Dynamic to biological processes where only cross-sectional data is available, demonstrating its wide applicability.",
+    "The videos shown here are generated from held-out test-set starting samples.",
   ],
   datasets: [
     {
       name: "Biotine",
       size: "large",
       patchGrid: { rows: 8, cols: 8 },
-      mediaNote: "Light grid lines mark the patch boundaries used for generation.",
+      mediaNote:
+        "Light grid lines mark the patch boundaries used for generation.",
       plot: "biotine/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
         "An in-house time lapse assay of human A549 lung cancer cells treated with biotine and imaged by confocal microscopy at the Curie Institute. Cells are marked with GFP for biotin effect, Rhodamin for membrane, and NucLight for nuclei. The videos shown below are collages of individual image patches.",
@@ -31,7 +33,8 @@ const siteData = {
       name: "ChromaLive",
       size: "large",
       patchGrid: { rows: 5, cols: 5 },
-      mediaNote: "Light grid lines mark the patch boundaries used for generation.",
+      mediaNote:
+        "Light grid lines mark the patch boundaries used for generation.",
       plot: "chromalive/3d_LDA_spline_projection_on_LDA_embedding_space_subsampled_10k.html",
       description:
         "A time lapse assay from [Lippincott et al. 2025]{lippincott2025}. HeLa cells were exposed to staurosporine, processed with the Live Cell Painting assay (ChromaLIVE), and imaged every 30 minutes for six hours using spinning-disk confocal microscopy. The videos shown below are collages of individual image patches.",
@@ -99,16 +102,34 @@ const siteData = {
         {
           gt: {
             src: "ependymal/gt_imgs/ground_truth_grid_01.png",
-            labels: ["stem", "halo", "flower", "individualization", "crescent", "ependymal"],
+            labels: [
+              "stem",
+              "halo",
+              "flower",
+              "individualization",
+              "crescent",
+              "ependymal",
+            ],
           },
-          gen: { src: "ependymal/gen_vids/extracted/trajectories_cell_2_2.mp4" },
+          gen: {
+            src: "ependymal/gen_vids/extracted/trajectories_cell_2_2.mp4",
+          },
         },
         {
           gt: {
             src: "ependymal/gt_imgs/ground_truth_grid_02.png",
-            labels: ["stem", "halo", "flower", "individualization", "crescent", "ependymal"],
+            labels: [
+              "stem",
+              "halo",
+              "flower",
+              "individualization",
+              "crescent",
+              "ependymal",
+            ],
           },
-          gen: { src: "ependymal/gen_vids/extracted/trajectories_cell_2_3.mp4" },
+          gen: {
+            src: "ependymal/gen_vids/extracted/trajectories_cell_2_3.mp4",
+          },
         },
       ],
     },
@@ -168,16 +189,38 @@ const siteData = {
         {
           gt: {
             src: "docetaxel/gt_imgs/ground_truth_grid_01.png",
-            labels: ["0.0003", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0"],
+            labels: [
+              "0.0003",
+              "0.001",
+              "0.003",
+              "0.01",
+              "0.03",
+              "0.1",
+              "0.3",
+              "1.0",
+            ],
           },
-          gen: { src: "docetaxel/gen_vids/extracted/trajectories_cell_1_1.mp4" },
+          gen: {
+            src: "docetaxel/gen_vids/extracted/trajectories_cell_1_1.mp4",
+          },
         },
         {
           gt: {
             src: "docetaxel/gt_imgs/ground_truth_grid_02.png",
-            labels: ["0.0003", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0"],
+            labels: [
+              "0.0003",
+              "0.001",
+              "0.003",
+              "0.01",
+              "0.03",
+              "0.1",
+              "0.3",
+              "1.0",
+            ],
           },
-          gen: { src: "docetaxel/gen_vids/extracted/trajectories_cell_0_0.mp4" },
+          gen: {
+            src: "docetaxel/gen_vids/extracted/trajectories_cell_0_0.mp4",
+          },
         },
       ],
     },
@@ -191,16 +234,40 @@ const siteData = {
         {
           gt: {
             src: "nocodazole/gt_imgs/ground_truth_grid_01.png",
-            labels: ["DMSO", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0", "3.0"],
+            labels: [
+              "DMSO",
+              "0.001",
+              "0.003",
+              "0.01",
+              "0.03",
+              "0.1",
+              "0.3",
+              "1.0",
+              "3.0",
+            ],
           },
-          gen: { src: "nocodazole/gen_vids/extracted/trajectories_cell_0_3.mp4" },
+          gen: {
+            src: "nocodazole/gen_vids/extracted/trajectories_cell_0_3.mp4",
+          },
         },
         {
           gt: {
             src: "nocodazole/gt_imgs/ground_truth_grid_02.png",
-            labels: ["DMSO", "0.001", "0.003", "0.01", "0.03", "0.1", "0.3", "1.0", "3.0"],
+            labels: [
+              "DMSO",
+              "0.001",
+              "0.003",
+              "0.01",
+              "0.03",
+              "0.1",
+              "0.3",
+              "1.0",
+              "3.0",
+            ],
           },
-          gen: { src: "nocodazole/gen_vids/extracted/trajectories_cell_0_1.mp4" },
+          gen: {
+            src: "nocodazole/gen_vids/extracted/trajectories_cell_0_1.mp4",
+          },
         },
       ],
     },
@@ -297,17 +364,25 @@ const gridLines = (cols, rows) => {
     const x = index + 1;
     return `<line x1="${x}" y1="0" x2="${x}" y2="${rows}"></line>`;
   }).join("");
-  const horizontal = Array.from({ length: Math.max(rows - 1, 0) }, (_, index) => {
-    const y = index + 1;
-    return `<line x1="0" y1="${y}" x2="${cols}" y2="${y}"></line>`;
-  }).join("");
+  const horizontal = Array.from(
+    { length: Math.max(rows - 1, 0) },
+    (_, index) => {
+      const y = index + 1;
+      return `<line x1="0" y1="${y}" x2="${cols}" y2="${y}"></line>`;
+    },
+  ).join("");
   return `<rect x="0" y="0" width="${cols}" height="${rows}"></rect>${vertical}${horizontal}`;
 };
 
 const patchGridSvg = (grid, extraClass = "") => {
   const cols = Number(grid?.cols);
   const rows = Number(grid?.rows);
-  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1) {
+  if (
+    !Number.isFinite(cols) ||
+    !Number.isFinite(rows) ||
+    cols < 1 ||
+    rows < 1
+  ) {
     return "";
   }
   return `<svg class="patch-grid${extraClass}" viewBox="0 0 ${cols} ${rows}" preserveAspectRatio="none" aria-hidden="true">${gridLines(cols, rows)}</svg>`;
@@ -577,7 +652,9 @@ document.querySelectorAll(".comparison-row").forEach(syncVideoGroup);
 
 const setupVideoStateControls = () => {
   document.querySelectorAll(".video-state-toggle").forEach((toggle) => {
-    const video = toggle.closest(".media-card")?.querySelector("video[data-sync-video]");
+    const video = toggle
+      .closest(".media-card")
+      ?.querySelector("video[data-sync-video]");
     if (!video) {
       return;
     }

@@ -164,6 +164,9 @@ a {
 }
 
 .external-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
   margin: 1.5rem 0 0 0;
 }
 
