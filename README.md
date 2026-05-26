@@ -38,13 +38,14 @@ uv sync --frozen
 
 This should be quite fast, and includes all needed dependencies.
 
-Note that in order to get reasonable performance, Static2Dynamic necessitates GPUs to run. It was only tested on NVIDIA hardware, and relies on CUDA.
+Note that in order to get reasonable performance, Static2Dynamic necessitates GPUs to run.  
+It was only tested on NVIDIA hardware, and relies on the CUDA libraries.
 
 ## Configuration of Static2Dynamic
 
 Static2Dynamic has 3 stages: pseudotime estimation, diffusion training, and video inference.
 
-The configuration of each of these stages follows the same idea: a config *class* is (already) defined in `GaussianProxy/conf/{pseudotime_conf,training_conf,inference_conf}.py`.
+The configuration of each of these stages follows the same idea: a config *class* is (already) defined in `GaussianProxy/conf/{pseudotime_conf,training_conf,inference_conf}.py`.  
 Users then need to *import* these generic class definitions and *instantiate* their own user/machine-specific config *objects* under `my_conf/{my_pseudotime_conf,my_training_conf,my_inference_conf}.py`.
 
 Examples of such user configs can be found under `example_user_conf/`.
@@ -60,7 +61,7 @@ They still need to be specialized to your paths and actual settings.
 
 For *training* Static2Dynamic, keep reading the [Pseudotime estimation](#pseudotime-estimation) and [Diffusion training](#diffusion-training) sections below.
 
-If you are interested in directly performing inference on pretrained models, you can skip the two next sections and jump to the [Video inference](#video-inference) part –see also the [Quick run](#quick-run) section for a detailed example of how to do that.
+If you are interested in directly performing inference on pretrained models, you can skip the two next sections and jump to the [Video inference](#video-inference) part –see also the [Quick run example](#quick-run-example) section for a detailed example of how to do that.
 
 ### Pseudotime estimation
 
@@ -94,7 +95,8 @@ The launcher script takes care of copying the user config to the experiment fold
 
 The third stage (video inference) is performed with the `GaussianProxy/inference.py` script.
 
-It can of course be performed on any already trained model; they can be downloaded from [huggingface.co/thethomasboyer/Static2Dynamic]([huggingface.co/thethomasboyer/Static2Dynamic](https://huggingface.co/thethomasboyer/Static2Dynamic)), together with the pseudotime predictions. If reusing precomputed pseudotimes predictions, make sure to update the paths saved in the `.parquet` files to match the actual paths on your machine. A script is provided at `scripts/change_dataset_prefix_in_parquet_file.py` to do this.
+It can of course be performed on any already trained model; they can be downloaded from [huggingface.co/thethomasboyer/Static2Dynamic]([huggingface.co/thethomasboyer/Static2Dynamic](https://huggingface.co/thethomasboyer/Static2Dynamic)), together with the pseudotime predictions.  
+If reusing precomputed pseudotimes predictions, make sure to update the paths saved in the `.parquet` files to match the actual paths on your machine. A script is provided at `scripts/change_dataset_prefix_in_parquet_file.py` to do this easily.
 
 First, a user config must be created. Such a config is a `GaussianProxy.conf.inference_conf.InferenceConfig` *object* and must be defined in a python file located at `my_conf/my_inference_conf.py` and named `inference_conf`.
 
@@ -114,7 +116,7 @@ uv run GaussianProxy/inference.py
 
 A Static2Dynamic generation corresponds to the `InvertedRegeneration` evaluation class, which is already in the example config. It will generate a grid of videos starting on randomly sampled test frames from the starting dataset (typically a few dozen minutes to a few hours, depending on hardware).
 
-## Quick run
+## Quick run example
 
 Here, as an example, we provide detailed instructions to quickly perform inference on the NASH steatosis dataset using the pretrained model, once the environment [Installation](#installation) is complete.
 
@@ -143,7 +145,7 @@ hf download thethomasboyer/Static2Dynamic --include 'NASH_steato/*' --local-dir 
 
 This will create a `Static2Dynamic_models/NASH_steato` folder containing the trained model and the pseudotime predictions for the dataset.
 
-Then update the file paths saved in `.Static2Dynamic_models/NASH_steato/pseudotime_predictions/NASH_steatosis__continuous_time_predictions__facebook_dinov2-with-registers-giant_dataset_preproc.parquet` with the `scripts/change_dataset_prefix_in_parquet_file.py` script to match the actual paths on your machine. Example if you extracted the data under `./steatosis/`:
+Then update the file paths saved in `./Static2Dynamic_models/NASH_steato/pseudotime_predictions/NASH_steatosis__continuous_time_predictions__facebook_dinov2-with-registers-giant_dataset_preproc.parquet` with the `scripts/change_dataset_prefix_in_parquet_file.py` script to match the actual paths on your machine. Example if you extracted the data under `./steatosis/`:
 
 ```sh
 python scripts/change_dataset_prefix_in_parquet_file.py \
@@ -206,4 +208,4 @@ Finally, run the inference script:
 uv run GaussianProxy/inference.py
 ```
 
-It will output under `run_path = root_experiments_path / project_name / folder_name`.
+It will output under a folder named after the evaluation class under `root_experiments_path / project_name / folder_name / inference`.
